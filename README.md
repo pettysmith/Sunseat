@@ -14,12 +14,16 @@ Sonnen-Karte für Hamburg (und überall sonst): Wo fällt gerade Sonne auf den B
 
 - **Der Knopf „Sonne in der Nähe“** öffnet eine Liste: geöffnete Cafés und Bars, die jetzt Sonne haben, im Umkreis von 2 km um deinen Standort. Sortiert nach Entfernung, mit Gehzeit, „Sonne bis …“ und Öffnungszeit.
 - **Leere Liste:** Nach Sonnenuntergang, bei bedecktem Himmel oder wenn laut Berechnung nichts in der Sonne liegt, bleibt die Liste leer. Ein Satz sagt, warum.
-- **Rückmeldung:** Jeder Eintrag fragt „Ist es dort jetzt sonnig?“ mit den Antworten „Ja, sonnig“ und „Nein, im Schatten“. Die Antwort wird in einer Datenbank im Browser (IndexedDB) gespeichert, zusammen mit:
-  - Prognose: Anteil der Sitzpunkte in der Sonne, „Sonne bis“
-  - Lage der drei geschätzten Sitzpunkte, jeweils mit Angabe, ob ein Gebäude oder ein Baum sie beschattet
-  - Fassadenrichtung, Sonnenhöhe und -richtung, Bewölkung, Sonnenscheindauer
-  - dein Standort und dein Abstand zum Ort
-- **Export:** Die Rückmeldungen lassen sich als JSON-Datei exportieren. Die Detailansicht eines Ortes zeigt die eigenen Rückmeldungen dort.
+- **Bewertung vor Ort:** In der Einzelansicht eines Ortes steht unter „Vor Ort“ die Frage „Ist es hier jetzt sonnig?“ mit den Antworten „Ja, sonnig“ und „Nein, im Schatten“.
+  - **Nur vor Ort:** Die Frage erscheint nur, wenn dein Standort höchstens 300 m entfernt ist und auf ±100 m genau. Beim Absenden wird die Position noch einmal frisch abgefragt.
+  - **Häufigkeit:** Höchstens eine Bewertung pro Ort alle 10 Minuten. „Ändern“ ersetzt die vorige Bewertung, statt eine zweite Stimme anzulegen.
+  - **Gespeichert in einer Datenbank im Browser (IndexedDB):**
+    - Antwort und Prognose (Anteil der Sitzpunkte in der Sonne, gerechnet mit 3D-Modell oder OSM-Höhen)
+    - Lage der Sitzpunkte, jeweils mit Angabe, ob ein Gebäude oder ein Baum sie beschattet
+    - Fassadenrichtung, Sonnenstand, Bewölkung
+    - dein Standort mit Genauigkeit und Abstand
+  - **Export:** Unten in der Nähe-Liste lässt sich alles als JSON-Datei herunterladen.
+  - **Grenze:** Der Schutz gegen Betrug läuft auf dem Gerät. Gegen gefälschte GPS-Positionen hilft erst eine Prüfung auf einem Server.
 
 ## Zwischenspeicher
 

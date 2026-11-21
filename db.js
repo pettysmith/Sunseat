@@ -53,6 +53,11 @@ export function addFeedback(record) {
   return tx('feedback', 'readwrite', (s) => s.add(record));
 }
 
+/** Frühere Bewertung als ersetzt markieren (bei „Ändern“). */
+export function markReplaced(old, newId) {
+  return tx('feedback', 'readwrite', (s) => s.put({ ...old, replacedBy: newId }));
+}
+
 export function allFeedback() {
   return tx('feedback', 'readonly', (s) => s.getAll()).then((r) => r || []);
 }

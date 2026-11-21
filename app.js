@@ -1,6 +1,6 @@
 // Sunseat – Sonnen-Karte mit Cafés und Bars
 import { SunLayer, MIN_ZOOM } from './sunlayer.js';
-import { addFeedback, allFeedback, feedbackFor } from './db.js';
+import { addFeedback, allFeedback, feedbackFor, markReplaced } from './db.js';
 import { sunVector, compass } from './shadow.js';
 import { Places, SUNNY, openTimeline, subLabel, weekHours, preciseContext, preciseTimeline } from './places.js';
 
@@ -462,6 +462,7 @@ async function loadPrecise(p) {
 
 function deselect() {
   state.selected = null;
+  state.rateFor = null;
   $('listView').hidden = false;
   $('detailView').hidden = true;
   renderPlaces();
@@ -494,6 +495,9 @@ function renderDetail() {
   const week = weekHours(p, t);
   const dayName = state.dayOffset === 0 ? 'heute' : state.dayOffset === 1 ? 'morgen' : `am ${fmtWeekday.format(t)}`;
 
+  // Bewertungsbereich beim Neuzeichnen behalten (Zustand und Knöpfe)
+  const keepRate = state.rateFor === p.id ? $('rateBox') : null;
+  keepRate?.remove();
   v.innerHTML = `
     <button type="button" class="back" id="back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>Alle Orte</button>
     <h2>${esc(p.name)}</h2>
@@ -530,10 +534,18 @@ function renderDetail() {
       </ul>
       ${p.osm ? `<p class="note"><a href="https://www.openstreetmap.org/edit?${p.osm.replace('/', '=')}" target="_blank" rel="noopener">Angaben in OpenStreetMap ergänzen</a></p>` : ''}
       <p class="note" id="fbSummary"></p>
+    </section>
+
+    <section class="group">
+      <h3>Vor Ort</h3>
+      <div id="rateBox"></div>
     </section>`;
   $('back').onclick = deselect;
-  feedbackFor(p.id).then((list) => {
+  if (keepRate) $('rateBox').replaceWith(keepRate);
+  else { state.rateFor = p.id; renderRating(p, inf); }
+  feedbackFor(p.id).then((all) => {
     const el = $('fbSummary');
+    const list = all.filter((f) => !f.replacedBy);
     if (!el || !list.length) return;
     const sun = list.filter((f) => f.answer === 'sun').length;
     el.textContent = `Deine Rückmeldungen hier: ${sun}× sonnig, ${list.length - sun}× Schatten.`;
@@ -703,56 +715,101 @@ async function openNearby() {
         <span class="row-title">${esc(p.name)}</span>
         <span class="row-sub">${subLabel(p)} · ${d < 1000 ? Math.round(d / 10) * 10 + ' m' : (d / 1000).toFixed(1).replace('.', ',') + ' km'} · ${Math.max(1, Math.round(d / 80))} min zu Fuß</span>
         <span class="row-sub"><span class="is-sun">${until}</span>${o.text ? ` · <span class="${o.cls}">${o.text}</span>` : ''}</span>
-      </button>
-      <div class="fb"></div>`;
+      </button>`;
     li.querySelector('.near-main').onclick = () => {
       if (!state.places.some((x) => x.id === p.id)) state.places.push(p);
       closeNearby();
       if (state.dayOffset !== 0) selectDay(0);
       select(p.id);
     };
-    renderFeedback(li.querySelector('.fb'), p, { origin, now, sun: suns[i], fraction: sun[i], d, until });
     ul.append(li);
   }
 }
 
-/** „Ist es dort jetzt sonnig?“ – Antwort mit Prognose und Eingangswerten speichern. */
-function renderFeedback(box, p, ctx) {
-  box.innerHTML = `<span class="fb-q">Ist es dort jetzt sonnig?</span>
-    <span class="fb-btns"><button type="button" data-a="sun">Ja, sonnig</button><button type="button" data-a="shade">Nein, im Schatten</button></span>`;
+const FB_MAX_DIST = 300;        // Meter: bewerten nur vor Ort
+const FB_MAX_ACC = 100;         // Meter: GPS muss halbwegs genau sein
+const FB_INTERVAL = 10 * 60000; // höchstens eine Bewertung pro Ort alle 10 Minuten
+
+/** Frische Position (höchstens 2 Minuten alt); fragt GPS nur, wenn nötig. */
+let locating = null;
+async function freshPosition(force = false) {
+  if (!force && state.me && Date.now() - state.me.at < 2 * 60000) return state.me;
+  if (!locating) locating = locate(false).finally(() => { locating = null; });
+  return locating;
+}
+
+/**
+ * Bewertung in der Einzelansicht: „Ist es hier jetzt sonnig?“
+ * Nur bis 300 m Entfernung vom aktuellen Standort (gegen Fern-Bewertungen); beim Absenden wird
+ * die Position erneut geprüft. Gespeichert werden Antwort, Prognose und die Werte dafür.
+ */
+async function renderRating(p, inf) {
+  const box = $('rateBox');
+  if (!box) return;
+  const recent = (await feedbackFor(p.id)).filter((f) => !f.replacedBy).sort((a, b) => b.ts.localeCompare(a.ts))[0];
+  if (recent && Date.now() - Date.parse(recent.ts) < FB_INTERVAL) {
+    box.innerHTML = `<p class="fb-done">Deine Bewertung um ${hhmm(new Date(recent.ts))}: <b>${recent.answer === 'sun' ? 'sonnig' : 'im Schatten'}</b>. <button type="button">Ändern</button></p>`;
+    box.querySelector('button').onclick = () => showRatingButtons(box, p, recent);
+    return;
+  }
+  box.innerHTML = '<p class="note">Standort wird geprüft …</p>';
+  const me = await freshPosition();
+  if ($('rateBox') !== box || state.selected !== p.id) return;
+  const why = ratingBlocked(me, p);
+  if (why) { box.innerHTML = `<p class="note">${why}</p>`; return; }
+  showRatingButtons(box, p, null);
+}
+
+function ratingBlocked(me, p) {
+  if (!me) return 'Bewerten geht nur mit Standortfreigabe und vor Ort (höchstens 300 m entfernt).';
+  if (me.accuracy > FB_MAX_ACC) return `Dein Standort ist gerade zu ungenau (±${Math.round(me.accuracy)} m), um vor Ort zu bewerten.`;
+  const d = metersBetween(me, p);
+  if (d > FB_MAX_DIST) return `Bewerten geht nur vor Ort, höchstens 300 m entfernt. Du bist ${d < 1000 ? Math.round(d / 10) * 10 + ' m' : (d / 1000).toFixed(1).replace('.', ',') + ' km'} entfernt.`;
+  return null;
+}
+
+function showRatingButtons(box, p, replaces) {
+  box.innerHTML = `<div class="fb"><span class="fb-q">Ist es hier jetzt sonnig?</span>
+    <span class="fb-btns"><button type="button" data-a="sun">Ja, sonnig</button><button type="button" data-a="shade">Nein, im Schatten</button></span></div>`;
   box.querySelectorAll('button[data-a]').forEach((b) => {
     b.onclick = async () => {
+      box.querySelectorAll('button').forEach((x) => { x.disabled = true; });
+      // Position beim Absenden erneut prüfen
+      const me = await freshPosition(true);
+      const why = ratingBlocked(me, p);
+      if (why) { box.innerHTML = `<p class="note">${why}</p>`; return; }
       const answer = b.dataset.a;
       const now = new Date();
       const s = sunVector(SunCalc.getPosition(now, p.lat, p.lon));
-      const sunNow = { ...s, date: now };
-      const diag = places.diagnose(p, sunNow);
+      const diag = places.diagnose(p, { ...s, date: now });
       const wx = weatherAt(now);
-      const me = state.me && Date.now() - state.me.at < 10 * 60000 ? state.me : null;
+      // Prognose für jetzt: aus der Tageskurve, wenn heute angezeigt wird (inkl. 3D-Modell), sonst aus den Sitzpunkten
+      let fraction = diag.samples.filter((x) => x.lit).length / diag.samples.length;
+      let source = 'osm';
+      const inf = info(p);
+      if (inf && state.dayOffset === 0) { fraction = inf.sun[nearestIdx(now)]; if (inf.precise) source = 'lod2'; }
       const record = {
         ts: now.toISOString(),
-        answer,                                   // 'sun' | 'shade'
+        answer,                                       // 'sun' | 'shade'
+        replaces: replaces?.id ?? null,               // korrigierte frühere Bewertung
         place: { id: p.id, osm: p.osm || null, name: p.name, kind: p.sub || p.kind, lat: p.lat, lon: p.lon, seating: p.seating },
-        user: me ? { lat: me.lat, lon: me.lon, accuracy: Math.round(me.accuracy), distance_m: Math.round(metersBetween(me, p)) } : null,
+        user: { lat: me.lat, lon: me.lon, accuracy: Math.round(me.accuracy), distance_m: Math.round(metersBetween(me, p)) },
         prediction: {
-          fraction: ctx.fraction,                 // Anteil der Sitzpunkte in der Sonne (Listenzeitpunkt)
-          fractionNow: diag.samples.filter((x) => x.lit).length / diag.samples.length,
-          state: ctx.fraction >= SUNNY ? 'sun' : ctx.fraction > 0 ? 'part' : 'shade',
-          until: ctx.until,
-          facadeDeg: diag.facadeDeg,
-          samples: diag.samples,                  // je Sitzpunkt: von Gebäude / Baum beschattet?
-          buildings: 'osm',                       // Gebäudehöhen aus OpenStreetMap (OpenFreeMap-Kacheln)
+          fraction,                                   // Anteil der Sitzpunkte in der Sonne
+          state: fraction >= SUNNY ? 'sun' : fraction > 0 ? 'part' : 'shade',
+          buildings: source,                          // 'lod2' = 3D-Stadtmodell, 'osm' = OpenStreetMap-Höhen
           trees: inHamburgBox(p) ? 'baumkataster-hamburg' : 'keine',
+          facadeDeg: diag.facadeDeg,
+          samples: diag.samples,                      // je Sitzpunkt: von Gebäude / Baum beschattet? (OSM-Rechnung)
         },
         sun: { altitude: +s.altDeg.toFixed(2), azimuth: +s.bearingDeg.toFixed(2) },
         weather: wx ? { cloud: wx.cloud, sunMin: wx.sunMin } : null,
-        app: 'sunseat-v9',
+        app: 'sunseat-v10',
       };
-      await addFeedback(record);
-      const agrees = (answer === 'sun') === (record.prediction.fractionNow >= SUNNY);
-      box.innerHTML = `<span class="fb-done">Gespeichert: <b>${answer === 'sun' ? 'sonnig' : 'im Schatten'}</b> um ${hhmm(now)}${agrees ? ', passt zur Prognose.' : ', weicht von der Prognose ab – danke!'}<button type="button">Ändern</button></span>`;
-      box.querySelector('button').onclick = () => renderFeedback(box, p, ctx);
-      renderFeedbackFoot();
+      const id = await addFeedback(record);
+      if (replaces) await markReplaced(replaces, id);
+      const agrees = (answer === 'sun') === (fraction >= SUNNY);
+      box.innerHTML = `<p class="fb-done">Gespeichert: <b>${answer === 'sun' ? 'sonnig' : 'im Schatten'}</b> um ${hhmm(now)}${agrees ? ', passt zur Prognose.' : ', weicht von der Prognose ab – danke, das hilft beim Verbessern.'}</p>`;
     };
   });
 }
@@ -762,7 +819,7 @@ const inHamburgBox = (p) => p.lon > 8.42 && p.lon < 10.34 && p.lat > 53.39 && p.
 async function renderFeedbackFoot() {
   const all = await allFeedback();
   const el = $('nearbyFoot');
-  el.innerHTML = `Deine Rückmeldungen werden mit Prognose, Sonnenstand, Wetter und Standort in einer Datenbank auf diesem Gerät gespeichert, damit die Berechnung später daraus lernen kann. Bisher: ${all.length}. `
+  el.innerHTML = `Ob es wirklich sonnig ist, kannst du in der Einzelansicht eines Ortes bewerten, wenn du höchstens 300 m entfernt bist. Die Bewertungen werden mit Prognose, Sonnenstand, Wetter und Standort auf diesem Gerät gespeichert. Bisher: ${all.filter((f) => !f.replacedBy).length}. `
     + (all.length ? '<button type="button" id="fbExport">Als Datei exportieren</button>' : '');
   $('fbExport')?.addEventListener('click', () => {
     const blob = new Blob([JSON.stringify(all, null, 2)], { type: 'application/json' });
