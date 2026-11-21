@@ -1,8 +1,9 @@
-// Sunseat Service Worker: App-Dateien offline vorhalten, Daten immer frisch laden.
-const VERSION = 'sunseat-v3';
+// Sunseat Service Worker: App-Dateien offline vorhalten, alles andere aus dem Netz.
+const VERSION = 'sunseat-v4';
 const SHELL = [
-  './', 'index.html', 'style.css', 'app.js', 'shadow.js', 'map.js', 'data.js', 'manifest.webmanifest',
-  'vendor/suncalc.js', 'vendor/opening_hours.js', 'vendor/maplibre-gl.js', 'vendor/maplibre-gl.css', 'icons/icon.svg', 'icons/icon-192.png', 'icons/apple-touch-icon.png',
+  './', 'index.html', 'style.css', 'app.js', 'shadow.js', 'sunlayer.js', 'manifest.webmanifest',
+  'vendor/suncalc.js', 'vendor/maplibre-gl.js', 'vendor/maplibre-gl.css', 'vendor/vector-tile.js',
+  'icons/icon.svg', 'icons/icon-192.png', 'icons/apple-touch-icon.png',
 ];
 
 self.addEventListener('install', (e) => {
@@ -17,7 +18,6 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
-  // Netz zuerst, damit Updates sofort ankommen; offline aus dem Cache
   e.respondWith(
     fetch(e.request).then((r) => {
       if (r.ok) { const copy = r.clone(); caches.open(VERSION).then((c) => c.put(e.request, copy)); }

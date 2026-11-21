@@ -291,34 +291,47 @@ export function compass(deg) {
   return n[Math.round(deg / 22.5) % 16];
 }
 
+function signedArea(poly) {
+  let a = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const [x1, y1] = poly[i], [x2, y2] = poly[(i + 1) % poly.length];
+    a += x1 * y2 - x2 * y1;
+  }
+  return a / 2;
+}
+
 /**
  * Schattenflächen aller Gebäude für einen Sonnenstand, als Liste von Polygonen
- * (lokale Meter, alle gegen den Uhrzeigersinn, damit sie sich beim Füllen vereinigen).
- * Pro Kante ein Viereck aus Kante und ihrem Schatten, dazu der Grundriss.
+ * (lokale Meter, alle gegen den Uhrzeigersinn, damit sie sich beim Füllen mit
+ * „nonzero“ vereinigen). Pro Wand ein Viereck aus Wand und ihrem Schatten,
+ * auch für Wände zu Innenhöfen. footprints = true fügt die Grundrisse hinzu.
  */
-export function shadowShapes(buildings, sun, maxLen = 600) {
+export function shadowShapes(buildings, sun, maxLen = 600, { footprints = true } = {}) {
   const out = [];
   if (sun.altDeg <= 0.5) return out;
-  const orient = (poly) => {
-    let a = 0;
-    for (let i = 0; i < poly.length; i++) {
-      const [x1, y1] = poly[i], [x2, y2] = poly[(i + 1) % poly.length];
-      a += x1 * y2 - x2 * y1;
-    }
-    return a < 0 ? poly.reverse() : poly;
-  };
+  const ccw = (poly) => (signedArea(poly) < 0 ? poly.reverse() : poly);
   for (const b of buildings) {
-    const L = Math.min(maxLen, (b.h - (b.minH || 0) > 0 ? b.h : 0) / sun.tanAlt);
+    const L = Math.min(maxLen, b.h / sun.tanAlt);
     if (!(L > 0.2)) continue;
     const ox = -sun.dx * L, oy = -sun.dy * L;
-    for (const ring of b.outer) {
-      out.push(orient(ring.slice(0, -1).map((p) => [p[0], p[1]])));
+    for (const ring of [...b.outer, ...b.inner]) {
       for (let i = 0; i < ring.length - 1; i++) {
         const [x1, y1] = ring[i], [x2, y2] = ring[i + 1];
         if (x1 === x2 && y1 === y2) continue;
-        out.push(orient([[x1, y1], [x2, y2], [x2 + ox, y2 + oy], [x1 + ox, y1 + oy]]));
+        out.push(ccw([[x1, y1], [x2, y2], [x2 + ox, y2 + oy], [x1 + ox, y1 + oy]]));
       }
     }
+    if (footprints) for (const ring of b.outer) out.push(ccw(ring.slice(0, -1).map((p) => [p[0], p[1]])));
+  }
+  return out;
+}
+
+/** Dachflächen: Außenringe gegen, Innenhöfe im Uhrzeigersinn – „nonzero“ lässt die Höfe frei. */
+export function roofRings(buildings) {
+  const out = [];
+  for (const b of buildings) {
+    for (const r of b.outer) { const p = r.slice(0, -1); if (signedArea(p) < 0) p.reverse(); out.push(p); }
+    for (const r of b.inner) { const p = r.slice(0, -1); if (signedArea(p) > 0) p.reverse(); out.push(p); }
   }
   return out;
 }

@@ -57,3 +57,17 @@ test('Schattenfläche zeigt von der Sonne weg und hat die richtige Länge', asyn
   assert.ok(Math.min(...ys) >= 0);
   assert.equal(shadowShapes([box(0, 0, 10, 10, 10)], sunAt(180, -1)).length, 0);
 });
+
+test('Innenhof bleibt frei und bekommt Schatten von den Hofwänden', async () => {
+  const { shadowShapes, roofRings } = await import('../shadow.js');
+  // Block 0..40 mit Hof 10..30, 15 m hoch, Sonne aus Süden 45°
+  const b = { outer: [[[0, 0], [40, 0], [40, 40], [0, 40], [0, 0]]], inner: [[[10, 10], [30, 10], [30, 30], [10, 30], [10, 10]]], h: 15, minH: 0 };
+  const rings = roofRings([b]);
+  assert.equal(rings.length, 2);
+  const area = (p) => p.reduce((a, [x1, y1], i) => { const [x2, y2] = p[(i + 1) % p.length]; return a + x1 * y2 - x2 * y1; }, 0);
+  assert.ok(area(rings[0]) > 0 && area(rings[1]) < 0);
+  const shapes = shadowShapes([b], sunAt(180, 45), 600, { footprints: false });
+  // Südwand des Hofes (y=30, Innenseite) wirft Schatten bis y=45; Hof-Nordwand y=10 Schatten nach Norden in den Hof bis y=25
+  const ys = shapes.flat().map((p) => p[1]);
+  assert.ok(ys.some((y) => Math.abs(y - 25) < 1e-9));
+});
