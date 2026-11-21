@@ -1,5 +1,6 @@
 // Sunseat – Sonnen-Karte mit Cafés und Bars
 import { SunLayer, MIN_ZOOM } from './sunlayer.js';
+import { addFeedback, allFeedback, feedbackFor } from './db.js';
 import { sunVector, compass } from './shadow.js';
 import { Places, SUNNY, openTimeline, subLabel, weekHours, preciseContext, preciseTimeline } from './places.js';
 
@@ -528,8 +529,15 @@ function renderDetail() {
         <li><span>Art</span><span class="v">${subLabel(p)}</span></li>
       </ul>
       ${p.osm ? `<p class="note"><a href="https://www.openstreetmap.org/edit?${p.osm.replace('/', '=')}" target="_blank" rel="noopener">Angaben in OpenStreetMap ergänzen</a></p>` : ''}
+      <p class="note" id="fbSummary"></p>
     </section>`;
   $('back').onclick = deselect;
+  feedbackFor(p.id).then((list) => {
+    const el = $('fbSummary');
+    if (!el || !list.length) return;
+    const sun = list.filter((f) => f.answer === 'sun').length;
+    el.textContent = `Deine Rückmeldungen hier: ${sun}× sonnig, ${list.length - sun}× Schatten.`;
+  });
 }
 
 function preciseNote(p, inf) {
@@ -595,12 +603,186 @@ function bindSheet() {
   });
 }
 
+/* ================= Sonne in der Nähe ================= */
+
+const NEAR_RADIUS = 2000; // Meter
+const NEAR_MAX = 25;
+let nearRun = 0;
+
+function metersBetween(a, b) {
+  const R = 6371000, r = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
+  const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+function closeNearby() {
+  nearRun++;
+  $('nearby').hidden = true;
+  refreshPlaces();
+}
+
+async function openNearby() {
+  const run = ++nearRun;
+  $('nearby').hidden = false;
+  $('nearbyList').replaceChildren();
+  $('nearbyFoot').textContent = '';
+  const status = (t) => { if (run === nearRun) $('nearbyStatus').textContent = t; };
+  status('Suche deinen Standort …');
+  let origin = state.me && Date.now() - state.me.at < 5 * 60000 ? state.me : await locate(false);
+  let originLabel = 'um deinen Standort';
+  if (!origin) {
+    const c = map.getCenter();
+    origin = { lat: c.lat, lon: c.lng };
+    originLabel = 'um die Kartenmitte (kein Standort)';
+  }
+  if (run !== nearRun) return;
+  const now = new Date();
+  $('nearbySub').textContent = `Jetzt, ${hhmm(now)} · im Umkreis von 2 km ${originLabel}`;
+  renderFeedbackFoot();
+
+  // Sonne überhaupt da?
+  const times = SunCalc.getTimes(now, origin.lat, origin.lon);
+  if (now < times.sunrise || now > times.sunset) {
+    status(now > times.sunset ? `Die Sonne ist untergegangen (${hhmm(times.sunset)}). Hier gibt es erst morgen wieder Sonnenplätze.` : `Die Sonne geht erst um ${hhmm(times.sunrise)} auf.`);
+    return;
+  }
+  const wx = weatherAt(now);
+  if (wx?.cloudy) {
+    status(`Gerade bedeckt (${Math.round(wx.cloud)} % Bewölkung). Im Umkreis von 2 km hat vermutlich kein Ort direkte Sonne.`);
+    return;
+  }
+
+  // Orte im Umkreis
+  status('Lade Cafés und Bars …');
+  const keys = layer.tilesAround(origin.lat, origin.lon, NEAR_RADIUS);
+  const { fast, full } = places.inTiles(keys);
+  let list = await Promise.race([full, new Promise((r) => setTimeout(() => r(null), 15000))]);
+  if (!list) list = await fast.catch(() => []);
+  if (run !== nearRun) return;
+  const cand = list
+    .map((p) => ({ p, d: metersBetween(origin, p) }))
+    .filter(({ p, d }) => d <= NEAR_RADIUS && p.seating !== false)
+    .sort((a, b) => a.d - b.d);
+
+  status(`Berechne Sonne für ${cand.length} Orte …`);
+  try { await places.prepare(cand.map((x) => x.p)); } catch { status('Gebäudedaten nicht erreichbar.'); return; }
+  if (run !== nearRun) return;
+
+  // Heutige Zeitschritte am Standort
+  const steps = [];
+  const start = new Date(times.sunrise); start.setMinutes(Math.ceil(start.getMinutes() / STEP) * STEP, 0, 0);
+  for (let t = start.getTime(); t <= times.sunset.getTime(); t += STEP * 60000) steps.push(new Date(t));
+  const suns = steps.map((t) => ({ ...sunVector(SunCalc.getPosition(t, origin.lat, origin.lon)), date: t }));
+  const dayKey = `near:${now.toDateString()}:${origin.lat.toFixed(2)},${origin.lon.toFixed(2)}`;
+  const i = steps.reduce((b, t, k) => (Math.abs(t - now) < Math.abs(steps[b] - now) ? k : b), 0);
+
+  const hits = [];
+  for (const { p, d } of cand) {
+    if (places.sunAt(p, dayKey, suns, i) < SUNNY) continue;
+    p._open ??= new Map();
+    if (!p._open.has(dayKey)) p._open.set(dayKey, openTimeline(p, steps));
+    if (p._open.get(dayKey)[i] === 0) continue; // geschlossen
+    hits.push({ p, d });
+    if (hits.length >= NEAR_MAX) break;
+  }
+  if (run !== nearRun) return;
+  if (!hits.length) {
+    status('Im Umkreis von 2 km liegt laut Berechnung gerade kein geöffnetes Café und keine Bar in der Sonne.');
+    return;
+  }
+  status('');
+  const ul = $('nearbyList');
+  for (const { p, d } of hits) {
+    const sun = places.sunTimeline(p, dayKey, suns).sun;
+    let j = i; while (j < sun.length && sun[j] >= SUNNY) j++;
+    const until = j >= sun.length ? `Sonne bis Sonnenuntergang (${hhmm(times.sunset)})` : `Sonne bis ${hhmm(steps[j])}`;
+    const o = openText(p, now, p._open.get(dayKey)[i]);
+    const li = document.createElement('li');
+    li.innerHTML = `<button type="button" class="near-main">
+        <span class="row-title">${esc(p.name)}</span>
+        <span class="row-sub">${subLabel(p)} · ${d < 1000 ? Math.round(d / 10) * 10 + ' m' : (d / 1000).toFixed(1).replace('.', ',') + ' km'} · ${Math.max(1, Math.round(d / 80))} min zu Fuß</span>
+        <span class="row-sub"><span class="is-sun">${until}</span>${o.text ? ` · <span class="${o.cls}">${o.text}</span>` : ''}</span>
+      </button>
+      <div class="fb"></div>`;
+    li.querySelector('.near-main').onclick = () => {
+      if (!state.places.some((x) => x.id === p.id)) state.places.push(p);
+      closeNearby();
+      if (state.dayOffset !== 0) selectDay(0);
+      select(p.id);
+    };
+    renderFeedback(li.querySelector('.fb'), p, { origin, now, sun: suns[i], fraction: sun[i], d, until });
+    ul.append(li);
+  }
+}
+
+/** „Ist es dort jetzt sonnig?“ – Antwort mit Prognose und Eingangswerten speichern. */
+function renderFeedback(box, p, ctx) {
+  box.innerHTML = `<span class="fb-q">Ist es dort jetzt sonnig?</span>
+    <span class="fb-btns"><button type="button" data-a="sun">Ja, sonnig</button><button type="button" data-a="shade">Nein, im Schatten</button></span>`;
+  box.querySelectorAll('button[data-a]').forEach((b) => {
+    b.onclick = async () => {
+      const answer = b.dataset.a;
+      const now = new Date();
+      const s = sunVector(SunCalc.getPosition(now, p.lat, p.lon));
+      const sunNow = { ...s, date: now };
+      const diag = places.diagnose(p, sunNow);
+      const wx = weatherAt(now);
+      const me = state.me && Date.now() - state.me.at < 10 * 60000 ? state.me : null;
+      const record = {
+        ts: now.toISOString(),
+        answer,                                   // 'sun' | 'shade'
+        place: { id: p.id, osm: p.osm || null, name: p.name, kind: p.sub || p.kind, lat: p.lat, lon: p.lon, seating: p.seating },
+        user: me ? { lat: me.lat, lon: me.lon, accuracy: Math.round(me.accuracy), distance_m: Math.round(metersBetween(me, p)) } : null,
+        prediction: {
+          fraction: ctx.fraction,                 // Anteil der Sitzpunkte in der Sonne (Listenzeitpunkt)
+          fractionNow: diag.samples.filter((x) => x.lit).length / diag.samples.length,
+          state: ctx.fraction >= SUNNY ? 'sun' : ctx.fraction > 0 ? 'part' : 'shade',
+          until: ctx.until,
+          facadeDeg: diag.facadeDeg,
+          samples: diag.samples,                  // je Sitzpunkt: von Gebäude / Baum beschattet?
+          buildings: 'osm',                       // Gebäudehöhen aus OpenStreetMap (OpenFreeMap-Kacheln)
+          trees: inHamburgBox(p) ? 'baumkataster-hamburg' : 'keine',
+        },
+        sun: { altitude: +s.altDeg.toFixed(2), azimuth: +s.bearingDeg.toFixed(2) },
+        weather: wx ? { cloud: wx.cloud, sunMin: wx.sunMin } : null,
+        app: 'sunseat-v9',
+      };
+      await addFeedback(record);
+      const agrees = (answer === 'sun') === (record.prediction.fractionNow >= SUNNY);
+      box.innerHTML = `<span class="fb-done">Gespeichert: <b>${answer === 'sun' ? 'sonnig' : 'im Schatten'}</b> um ${hhmm(now)}${agrees ? ', passt zur Prognose.' : ', weicht von der Prognose ab – danke!'}<button type="button">Ändern</button></span>`;
+      box.querySelector('button').onclick = () => renderFeedback(box, p, ctx);
+      renderFeedbackFoot();
+    };
+  });
+}
+
+const inHamburgBox = (p) => p.lon > 8.42 && p.lon < 10.34 && p.lat > 53.39 && p.lat < 53.97;
+
+async function renderFeedbackFoot() {
+  const all = await allFeedback();
+  const el = $('nearbyFoot');
+  el.innerHTML = `Deine Rückmeldungen werden mit Prognose, Sonnenstand, Wetter und Standort in einer Datenbank auf diesem Gerät gespeichert, damit die Berechnung später daraus lernen kann. Bisher: ${all.length}. `
+    + (all.length ? '<button type="button" id="fbExport">Als Datei exportieren</button>' : '');
+  $('fbExport')?.addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify(all, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `sunseat-rueckmeldungen-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+}
+
 /* ================= Standort ================= */
 
 function locate(fly = true) {
-  if (!navigator.geolocation) return;
+  return new Promise((resolve) => {
+  if (!navigator.geolocation) return resolve(null);
   navigator.geolocation.getCurrentPosition((pos) => {
     const ll = [pos.coords.longitude, pos.coords.latitude];
+    state.me = { lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy: pos.coords.accuracy, at: Date.now() };
+    resolve(state.me);
     if (!me) {
       const el = document.createElement('div');
       el.className = 'me';
@@ -608,7 +790,8 @@ function locate(fly = true) {
     } else me.setLngLat(ll);
     $('locate').classList.add('active');
     if (fly) map.easeTo({ center: ll, zoom: Math.max(map.getZoom(), 16.4), duration: 600 });
-  }, () => {}, { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 });
+  }, () => resolve(null), { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 });
+  });
 }
 
 /* ================= Bedienung ================= */
@@ -628,6 +811,8 @@ document.querySelectorAll('[data-filter]').forEach((b) => {
 $('slider').addEventListener('input', (e) => { state.idx = +e.target.value; updateSun(); renderPlaces(); });
 $('now').onclick = () => selectDay(0);
 $('locate').onclick = () => locate(true);
+$('nearbyBtn').onclick = openNearby;
+$('nearbyBack').onclick = closeNearby;
 window.addEventListener('resize', () => setDetent(state.detent, false));
 
 syncChips();

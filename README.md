@@ -10,6 +10,24 @@ Sonnen-Karte für Hamburg (und überall sonst): Wo fällt gerade Sonne auf den B
 - Zeitregler von Sonnenaufgang bis -untergang in 5-Minuten-Schritten, dazu Tage für die nächste Woche, Sonnenhöhe und -richtung und die Bewölkung als Vorhersage
 - Die Kartenposition steht im Link (`#zoom/lat/lon`) und lässt sich teilen.
 
+## Sonne in der Nähe
+
+- **Der Knopf „Sonne in der Nähe“** öffnet eine Liste: geöffnete Cafés und Bars, die jetzt Sonne haben, im Umkreis von 2 km um deinen Standort. Sortiert nach Entfernung, mit Gehzeit, „Sonne bis …“ und Öffnungszeit.
+- **Leere Liste:** Nach Sonnenuntergang, bei bedecktem Himmel oder wenn laut Berechnung nichts in der Sonne liegt, bleibt die Liste leer. Ein Satz sagt, warum.
+- **Rückmeldung:** Jeder Eintrag fragt „Ist es dort jetzt sonnig?“ mit den Antworten „Ja, sonnig“ und „Nein, im Schatten“. Die Antwort wird in einer Datenbank im Browser (IndexedDB) gespeichert, zusammen mit:
+  - Prognose: Anteil der Sitzpunkte in der Sonne, „Sonne bis“
+  - Lage der drei geschätzten Sitzpunkte, jeweils mit Angabe, ob ein Gebäude oder ein Baum sie beschattet
+  - Fassadenrichtung, Sonnenhöhe und -richtung, Bewölkung, Sonnenscheindauer
+  - dein Standort und dein Abstand zum Ort
+- **Export:** Die Rückmeldungen lassen sich als JSON-Datei exportieren. Die Detailansicht eines Ortes zeigt die eigenen Rückmeldungen dort.
+
+## Zwischenspeicher
+
+- Kartenkacheln, Schriften und Kartenstil: 7 Tage (Service Worker)
+- Baumkataster und 3D-Stadtmodell: 30 Tage (Service Worker)
+- Cafés und Bars aus Overpass: 24 Stunden pro Kachel (IndexedDB, weil Overpass per POST abgefragt wird)
+- Wetter: frisch aus dem Netz, ohne Netz bis 3 Stunden alt aus dem Speicher
+
 ## Genauigkeit in Hamburg
 
 - **Straßenbäume:** Das Baumkataster der Stadt (über 1000 Bäume pro km²) fließt überall in die Karte und in die Berechnung an den Sitzplätzen ein. Jede Krone wird als Kugel angenähert, Radius aus dem Kronendurchmesser. Die Höhe ist geschätzt (4 m + 1,2 × Kronendurchmesser), weil das Kataster keine Höhe enthält. Laubbäume zählen nur von Ende April bis Ende Oktober, Nadelbäume immer.
@@ -32,7 +50,7 @@ Sonnen-Karte für Hamburg (und überall sonst): Wo fällt gerade Sonne auf den B
 2. Für den Sonnenstand (SunCalc) wirft jede Wand ein Schattenviereck vom Fuß bis zur Länge Höhe ÷ tan(Sonnenhöhe). Auch Wände zu Innenhöfen werfen Schatten.
 3. Schatten und Dächer werden portionsweise in eine Maske gezeichnet und dann unter den Straßennamen auf die Karte gelegt. Ein einziger Riesenpfad wäre bei Zoom 14 minutenlang beim Füllen. Alles andere an Land bekommt die Sonnenfarbe.
 
-Aufbau: `shadow.js` (Geometrie), `trees.js` (Baumkataster), `lod2.js` (3D-Stadtmodell), `sunlayer.js` (Kacheln laden, Sonne zeichnen), `places.js` (Cafés und Bars, Öffnungszeiten, Sonne am Sitzplatz), `app.js` (Karte und Bedienung). Tests: `npm test`.
+Aufbau: `db.js` (IndexedDB: Zwischenspeicher, Rückmeldungen), `shadow.js` (Geometrie), `trees.js` (Baumkataster), `lod2.js` (3D-Stadtmodell), `sunlayer.js` (Kacheln laden, Sonne zeichnen), `places.js` (Cafés und Bars, Öffnungszeiten, Sonne am Sitzplatz), `app.js` (Karte und Bedienung). Tests: `npm test`.
 
 ## Grenzen
 

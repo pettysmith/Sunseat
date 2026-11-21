@@ -2,6 +2,9 @@
 // Sonne am geschätzten Sitzplatz.
 import { ShadowIndex, terraceSamples } from './shadow.js';
 import { TreeIndex, inHamburg } from './trees.js';
+import { cacheGet, cacheSet } from './db.js';
+
+const OSM_MAX_AGE = 24 * 3600e3; // Cafés aus Overpass: einen Tag zwischenspeichern
 import { fetchLod2, Lod2Index } from './lod2.js';
 
 /* global opening_hours */
@@ -93,26 +96,48 @@ export class Places {
     return this.fastTiles.get(key);
   }
 
-  /** Alle noch fehlenden Kacheln in einer Overpass-Abfrage holen (Overpass erlaubt nur wenige parallele Abfragen). */
+  /**
+   * Alle noch fehlenden Kacheln holen: erst aus dem Zwischenspeicher (24 h), den Rest in
+   * EINER Overpass-Abfrage (Overpass erlaubt nur wenige parallele Abfragen).
+   */
   _fetchMissing(keys) {
     const missing = keys.filter((k) => !this.tiles.has(k));
     if (!missing.length) return;
-    let s = 90, w = 180, n = -90, e = -180;
-    for (const k of missing) {
-      const b = tileBBox(k);
-      s = Math.min(s, b.s); w = Math.min(w, b.w); n = Math.max(n, b.n); e = Math.max(e, b.e);
-    }
-    const all = overpass(`[out:json][timeout:40];nwr["amenity"~"^(cafe|bar|pub|biergarten)$"]["name"](${s},${w},${n},${e});out center tags;`)
-      .then((j) => j.elements.map(toPlace).filter(Boolean))
-      .catch(() => null);
-    for (const k of missing) {
-      const b = tileBBox(k);
-      const p = all.then((list) => {
-        if (!list) { setTimeout(() => this.tiles.delete(k), 60000); return null; } // später erneut versuchen
-        return list.filter((x) => x.lat >= b.s && x.lat < b.n && x.lon >= b.w && x.lon < b.e);
-      });
-      this.tiles.set(k, p);
-    }
+    const resolvers = new Map();
+    for (const k of missing) this.tiles.set(k, new Promise((res) => resolvers.set(k, res)));
+    (async () => {
+      const need = [];
+      for (const k of missing) {
+        const cached = await cacheGet('osm:' + k, OSM_MAX_AGE);
+        if (cached) resolvers.get(k)(cached.map(toPlace).filter(Boolean));
+        else need.push(k);
+      }
+      if (!need.length) return;
+      let s = 90, w = 180, n = -90, e = -180;
+      for (const k of need) {
+        const b = tileBBox(k);
+        s = Math.min(s, b.s); w = Math.min(w, b.w); n = Math.max(n, b.n); e = Math.max(e, b.e);
+      }
+      let elements = null;
+      try {
+        const j = await overpass(`[out:json][timeout:40];nwr["amenity"~"^(cafe|bar|pub|biergarten)$"]["name"](${s},${w},${n},${e});out center tags;`);
+        elements = j.elements;
+      } catch { /* nicht erreichbar */ }
+      for (const k of need) {
+        if (!elements) {
+          resolvers.get(k)(null);
+          setTimeout(() => this.tiles.delete(k), 60000); // später erneut versuchen
+          continue;
+        }
+        const b = tileBBox(k);
+        const mine = elements.filter((el) => {
+          const lat = el.lat ?? el.center?.lat, lon = el.lon ?? el.center?.lon;
+          return lat >= b.s && lat < b.n && lon >= b.w && lon < b.e;
+        });
+        cacheSet('osm:' + k, mine);
+        resolvers.get(k)(mine.map(toPlace).filter(Boolean));
+      }
+    })();
   }
 
   /** Schatten-Index für alle Gebäude um die Orte herum. */
@@ -171,6 +196,21 @@ export class Places {
     const arr = this._day(c, dayKey, suns.length);
     if (Number.isNaN(arr[i])) this._compute(c, arr, suns, i);
     return arr[i];
+  }
+
+  /** Begründung der Prognose je Sitzpunkt: von Gebäude oder Baum beschattet? (für Rückmeldungen) */
+  diagnose(place, sun) {
+    const c = this._entry(place);
+    const { index, trees } = this.index;
+    return {
+      facadeDeg: c.facadeDeg,
+      samples: c.samples.map((p) => {
+        const [lat, lon] = this.sl.proj.toLatLon(p.x, p.y);
+        const building = sun.altDeg > 0.5 && index.isShaded(p.x, p.y, sun.dx, sun.dy, sun.tanAlt, 1.2, p.ex);
+        const tree = sun.altDeg > 0.5 && !!sun.date && trees.isShaded(p.x, p.y, sun, sun.date);
+        return { lat: +lat.toFixed(6), lon: +lon.toFixed(6), building, tree, lit: sun.altDeg > 0.5 && !building && !tree };
+      }),
+    };
   }
 
   /** Sonnenanteil für alle Zeitschritte des Tages; dayKey identifiziert Tag und Ort der Schritte. */

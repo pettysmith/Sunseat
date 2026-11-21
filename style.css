@@ -167,3 +167,32 @@ body.sheet-large .maplibregl-ctrl-bottom-right { display: none; }
   .timebar { padding-top: 14px; }
   .maplibregl-ctrl-bottom-right { bottom: 4px; }
 }
+
+/* ---------- Sonne in der Nähe ---------- */
+.topbar .pill-button { margin-left: auto; }
+.pill-button {
+  height: 44px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--separator); background: var(--bg);
+  font-size: 15px; font-weight: 600; color: var(--label); white-space: nowrap;
+}
+.page { position: fixed; inset: 0; z-index: 40; background: var(--bg); display: flex; flex-direction: column; }
+.page-bar { flex: none; padding: calc(var(--sat) + 6px) 12px 2px; border-bottom: 1px solid var(--separator); }
+.page-content { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 0 0 calc(24px + var(--sab)); }
+.page-title { font-size: 28px; letter-spacing: -0.02em; padding: 14px 16px 0; }
+.page-sub { margin: 4px 16px 0; font-size: 15px; }
+.page-status { margin: 12px 16px; font-size: 15px; color: var(--label); }
+.page-status:empty { display: none; }
+.near-list li { border-top: 1px solid var(--separator); padding: 12px 16px; }
+.near-main { display: block; width: 100%; border: 0; background: none; padding: 0; text-align: left; }
+.near-main .row-sub { margin-top: 2px; }
+.fb { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.fb-q { font-size: 14px; color: var(--secondary); }
+.fb-btns { display: flex; gap: 8px; }
+.fb-btns button {
+  height: 36px; padding: 0 12px; border-radius: 18px; border: 1px solid var(--separator); background: var(--bg);
+  font-size: 14px; font-weight: 600;
+}
+.fb-btns button[data-a="sun"] { color: #9a5b00; border-color: var(--sun-soft); }
+.fb-done { font-size: 14px; color: var(--secondary); }
+.fb-done b { color: var(--label); font-weight: 600; }
+.fb-done button { border: 0; background: none; color: var(--tint); font-size: 14px; padding: 0 0 0 6px; }
+.footnote button { border: 0; background: none; color: var(--tint); padding: 0; font-size: inherit; }
