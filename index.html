@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Sunseat</title>
+  <meta name="description" content="Welche Café-Terrasse in deiner Nähe liegt gerade in der Sonne?">
+  <meta name="theme-color" content="#f6efe3" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17140f" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Sunseat">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="13" r="6"/><path d="M4 26h24" /><path d="M16 2v3M16 21v3M5 13H2M30 13h-3M8.2 5.2l2 2M23.8 5.2l-2 2" /></svg>
+      <h1>Sunseat</h1>
+    </div>
+    <button id="locBtn" class="loc" type="button" aria-label="Ort ändern">
+      <span id="locLabel">Standort wird gesucht …</span>
+    </button>
+  </header>
+
+  <section id="search" class="search" hidden>
+    <form id="searchForm">
+      <input id="searchInput" type="search" placeholder="Ort oder Adresse, z. B. Ottensen" autocomplete="off" enterkeyhint="search">
+      <button type="submit">Suchen</button>
+    </form>
+    <div class="search-quick">
+      <button type="button" data-gps>Mein Standort</button>
+      <button type="button" data-place="53.5636,9.9662,Sternschanze">Schanze</button>
+      <button type="button" data-place="53.5527,9.9306,Ottensen">Ottensen</button>
+      <button type="button" data-place="53.5880,9.9790,Eppendorf">Eppendorf</button>
+      <button type="button" data-place="53.5511,9.9937,Innenstadt">Innenstadt</button>
+      <button type="button" data-place="53.5686,10.0322,Uhlenhorst">Uhlenhorst</button>
+    </div>
+    <ul id="searchResults" class="search-results"></ul>
+  </section>
+
+  <section class="controls" aria-label="Zeit wählen">
+    <div id="days" class="days" role="tablist"></div>
+    <div class="slider-wrap">
+      <canvas id="histo" class="histo" aria-hidden="true"></canvas>
+      <input id="time" type="range" min="0" max="100" step="1" value="0" aria-label="Uhrzeit">
+    </div>
+    <div class="timerow">
+      <output id="timeLabel" class="time-label">–</output>
+      <span id="sunLabel" class="sun-label"></span>
+      <button id="nowBtn" type="button" class="now">Jetzt</button>
+    </div>
+    <p id="weather" class="weather"></p>
+  </section>
+
+  <main>
+    <p id="status" class="status">Lade …</p>
+    <div class="filters">
+      <label><input type="checkbox" id="fOpen"> nur geöffnet</label>
+      <label><input type="checkbox" id="fSun"> nur Sonne</label>
+      <label><input type="checkbox" id="fNoSeat" checked> ohne „keine Außenplätze“</label>
+      <label class="radius">Umkreis
+        <select id="fRadius">
+          <option value="300">300 m</option>
+          <option value="500" selected>500 m</option>
+          <option value="800">800 m</option>
+        </select>
+      </label>
+    </div>
+    <ol id="list" class="list"></ol>
+
+    <details class="about">
+      <summary>Wie das funktioniert · Quellen · Grenzen</summary>
+      <h3>Wie das funktioniert</h3>
+      <p>Für jedes Café wird geschätzt, wo die Außenplätze sind: an der nächsten Fassade des Gebäudes, in dem das Café liegt, 3&nbsp;m davor, an drei Punkten nebeneinander. Von dort wird für jeden Zeitpunkt ein Strahl Richtung Sonne geschickt. Trifft er ein Gebäude, das höher ist als der Strahl an dieser Stelle, liegt der Punkt im Schatten. Liegen alle drei Punkte in der Sonne, heißt es „Sonne“, sonst „Halbschatten“ oder „Schatten“.</p>
+      <h3>Grenzen</h3>
+      <ul>
+        <li>Die genaue Lage der Außenplätze kennt niemand. Liegt das Café an einer Ecke, kann die geschätzte Fassade die falsche sein.</li>
+        <li>Gebäudehöhen stammen aus OpenStreetMap. Fehlen sie, werden sie nach Gebäudeart geschätzt (Wohnhaus 7&nbsp;m, sonst meist 12&nbsp;m).</li>
+        <li>Bäume, Markisen und Schirme werden nicht berücksichtigt.</li>
+        <li>Fehlen Öffnungszeiten oder die Angabe zu Außenplätzen in OpenStreetMap, steht dort „unbekannt“. Es wird nicht geraten.</li>
+        <li>Die Bewölkung ist eine Vorhersage für die Gegend, nicht für die einzelne Terrasse.</li>
+      </ul>
+      <h3>Quellen und Lizenzen</h3>
+      <ul>
+        <li>Cafés, Öffnungszeiten, Gebäude: © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap-Mitwirkende</a>, ODbL, abgefragt über die Overpass-API</li>
+        <li>Bewölkung und Sonnenscheindauer: <a href="https://open-meteo.com/">Open-Meteo</a>, CC BY 4.0</li>
+        <li>Ortssuche: <a href="https://nominatim.org/">Nominatim</a> (OpenStreetMap)</li>
+        <li>Sonnenstand: <a href="https://github.com/mourner/suncalc">SunCalc</a>, BSD-2-Clause</li>
+        <li>Öffnungszeiten auswerten: <a href="https://github.com/opening-hours/opening_hours.js">opening_hours.js</a>, LGPL-3.0</li>
+      </ul>
+      <p class="fine">Fehlende Daten kannst du selbst in OpenStreetMap eintragen; jedes Café hat dafür einen Link „in OSM bearbeiten“.</p>
+    </details>
+  </main>
+
+  <template id="cardTpl">
+    <li class="card">
+      <div class="card-head">
+        <a class="name" target="_blank" rel="noopener"></a>
+        <span class="dist"></span>
+      </div>
+      <div class="chips"></div>
+      <div class="bar" aria-hidden="true"><div class="bar-sun"></div><div class="bar-open"></div><div class="bar-now"></div></div>
+      <div class="bar-scale" aria-hidden="true"><span></span><span></span></div>
+      <div class="meta"></div>
+    </li>
+  </template>
+
+  <script src="vendor/suncalc.js"></script>
+  <script src="vendor/opening_hours.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
