@@ -8,7 +8,7 @@ Sonnen-Karte für Hamburg (und überall sonst): Wo fällt gerade Sonne auf den B
 - **Leicht abgedunkelt:** Schatten von Gebäuden und Dachflächen
 - **Wasser** bleibt neutral.
 - Zeitregler von Sonnenaufgang bis -untergang in 5-Minuten-Schritten, dazu Tage für die nächste Woche, Sonnenhöhe und -richtung und die Bewölkung als Vorhersage
-- Die Kartenposition steht im Link (`#zoom/lat/lon`) und lässt sich teilen.
+- **Start:** Jedes Gerät öffnet mit seiner eigenen Ansicht, also der zuletzt dort gesehenen Stelle und dann dem eigenen Standort, und mit der aktuellen Uhrzeit. „Jetzt“ springt jederzeit dorthin zurück, auch nachts. Nach mehr als 10 Minuten im Hintergrund springt die App von selbst auf jetzt.
 
 ## Weit herausgezoomt: vorab berechnete Horizontprofile
 
@@ -26,12 +26,13 @@ Für das Gebiet Bahrenfeld bis Hamm und Wilhelmsburg-Nord bis Barmbek-Nord (1557
 
   Mit `VERIFY=1` wird zusätzlich die Übereinstimmung mit der Strahlrechnung ausgegeben. Für das ganze Gebiet dauert der Lauf einige Minuten, vor allem wegen des Baumkatasters. Das Rechnen selbst braucht etwa 1 Sekunde.
 
-## Sonne in der Nähe
+## Listenansicht
 
-- **Der Knopf „Sonne in der Nähe“** öffnet eine Liste: geöffnete Cafés und Bars, die jetzt Sonne haben, im Umkreis von 2 km um deinen Standort. Sortiert nach Entfernung, mit Gehzeit, „Sonne bis …“ und Öffnungszeit.
+- **Der Knopf „Listenansicht“** öffnet eine Liste: geöffnete Cafés und Bars, die jetzt Sonne haben, im Umkreis von 2 km um deinen Standort. Sortiert nach Entfernung, mit Gehzeit, „Sonne bis …“ und Öffnungszeit.
 - **Leere Liste:** Nach Sonnenuntergang, bei bedecktem Himmel oder wenn laut Berechnung nichts in der Sonne liegt, bleibt die Liste leer. Ein Satz sagt, warum.
 - **Bewertung vor Ort:** In der Einzelansicht eines Ortes steht unter „Vor Ort“ die Frage „Ist es hier jetzt sonnig?“ mit den Antworten „Ja, sonnig“ und „Nein, im Schatten“.
   - **Nur vor Ort:** Die Frage erscheint nur, wenn dein Standort höchstens 300 m entfernt ist und auf ±100 m genau. Beim Absenden wird die Position noch einmal frisch abgefragt.
+  - **Nur bei Tageslicht:** Nicht in der Stunde vor und nach Sonnenuntergang und nicht nachts.
   - **Häufigkeit:** Höchstens eine Bewertung pro Ort alle 10 Minuten. „Ändern“ ersetzt die vorige Bewertung, statt eine zweite Stimme anzulegen.
   - **Gespeichert in einer Datenbank im Browser (IndexedDB):**
     - Antwort und Prognose (Anteil der Sitzpunkte in der Sonne, gerechnet mit 3D-Modell oder OSM-Höhen)

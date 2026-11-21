@@ -22,7 +22,7 @@
   <header class="top">
     <div class="topbar">
       <h1 class="brand"><img src="icons/icon.svg" alt="" width="22" height="22">Sunseat</h1>
-      <button id="nearbyBtn" class="pill-button" type="button">Sonne in der Nähe</button>
+      <button id="nearbyBtn" class="pill-button" type="button">Listenansicht</button>
       <button id="locate" class="icon-button" type="button" aria-label="Mein Standort">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle class="dot" cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7.5"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3"/></svg>
       </button>
@@ -39,14 +39,14 @@
   <p id="notice" class="notice" role="status" hidden></p>
 
   <section id="sheet" class="sheet" data-detent="medium" aria-label="Zeit und Orte">
-    <div class="grabber-area" id="grabber" role="button" tabindex="0" aria-label="Panel vergrößern oder verkleinern"><span class="grabber"></span></div>
+    <div class="grabber-area" id="grabber" role="button" tabindex="0" aria-label="Bereich vergrößern oder verkleinern"><span class="grabber"></span></div>
 
     <div class="timebar" id="timebar">
       <nav id="days" class="segmented" aria-label="Tag"></nav>
       <div class="time-row">
         <output id="time" class="time">–</output>
         <span id="sun" class="secondary"></span>
-        <button id="now" class="text-button" type="button" hidden>Jetzt</button>
+        <button id="now" class="now-button" type="button" aria-pressed="false">Jetzt</button>
       </div>
       <input id="slider" class="slider" type="range" min="0" max="100" value="0" step="1" aria-label="Uhrzeit">
       <div class="ends secondary"><span id="rise"></span><span id="cloud"></span><span id="set"></span></div>
@@ -62,7 +62,7 @@
         <p class="footnote secondary">
           <span class="legend"><i class="sw sw-sun"></i>Sonne am Boden</span>
           <span class="legend"><i class="sw sw-shade"></i>Schatten und Dächer</span><br>
-          Lage der Tische geschätzt: 3 m vor der nächsten Fassade. Daten © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, Karte <a href="https://openfreemap.org">OpenFreeMap</a>, Wetter <a href="https://open-meteo.com">Open-Meteo</a>. In Hamburg: 3D-Gebäudemodell LoD2 und Straßenbaumkataster © Freie und Hansestadt Hamburg (<a href="https://www.govdata.de/dl-de/by-2-0">dl-de/by-2.0</a>).
+          Tische geschätzt: 3 m vor der Fassade. Daten © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, Karte <a href="https://openfreemap.org">OpenFreeMap</a>, Wetter <a href="https://open-meteo.com">Open-Meteo</a>. 3D-Stadtmodell und Baumkataster © Freie und Hansestadt Hamburg (<a href="https://www.govdata.de/dl-de/by-2-0">dl-de/by-2.0</a>).
         </p>
       </div>
       <article id="detailView" class="detail" hidden></article>
@@ -74,7 +74,7 @@
       <button type="button" class="back" id="nearbyBack"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>Karte</button>
     </header>
     <div class="page-content">
-      <h2 id="nearbyTitle" class="page-title">Sonne in der Nähe</h2>
+      <h2 id="nearbyTitle" class="page-title">Listenansicht</h2>
       <p id="nearbySub" class="secondary page-sub"></p>
       <p id="nearbyStatus" class="page-status"></p>
       <ul id="nearbyList" class="list near-list"></ul>

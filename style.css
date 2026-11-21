@@ -84,6 +84,11 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .time-row { display: flex; align-items: baseline; gap: 10px; margin-top: 10px; }
 .time { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .time-row .secondary { flex: 1; font-size: 14px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.now-button {
+  flex: none; height: 32px; padding: 0 12px; border-radius: 16px; border: 1px solid var(--tint);
+  background: var(--bg); color: var(--tint); font-weight: 600; font-size: 14px;
+}
+.now-button[aria-pressed="true"] { background: var(--tint); color: #fff; }
 .text-button { border: 0; background: none; padding: 6px 0; color: var(--tint); font-weight: 600; font-size: 15px; }
 
 .slider { width: 100%; margin: 6px 0 0; height: 32px; background: transparent; -webkit-appearance: none; appearance: none; touch-action: pan-x; }
