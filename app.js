@@ -1,66 +1,96 @@
-// Sunseat – Sonnen-Karte
+// Sunseat – Sonnen-Karte mit Cafés und Bars
 import { SunLayer, MIN_ZOOM } from './sunlayer.js';
 import { sunVector, compass } from './shadow.js';
+import { Places, SUNNY, openTimeline, subLabel, weekHours } from './places.js';
 
 /* global maplibregl, SunCalc */
 
 const STYLE = 'https://tiles.openfreemap.org/styles/positron';
 const TILES = 'https://tiles.openfreemap.org/planet';
 const START = { lng: 9.9662, lat: 53.5636, zoom: 16.4 }; // Sternschanze
-const STEP = 5; // Minuten
+const STEP = 5;              // Minuten
+const PLACES_ZOOM = 15;      // ab hier Cafés und Bars
+const MAX_LIST = 120;
 
 const $ = (id) => document.getElementById(id);
 const fmtTime = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' });
 const fmtDay = new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: 'numeric' });
+const fmtWeekday = new Intl.DateTimeFormat('de-DE', { weekday: 'long' });
+const fmtDate = new Intl.DateTimeFormat('de-DE', { day: 'numeric', month: 'long' });
 const hhmm = (d) => fmtTime.format(d);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const state = { dayOffset: 0, steps: [], idx: 0, clouds: null, cloudsAt: null };
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('sunseat.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('sunseat.' + k, JSON.stringify(v)); } catch { /* egal */ } },
+};
 
-/* ---------- Karte ---------- */
+const state = {
+  dayOffset: 0, steps: [], suns: [], idx: 0, dayKey: '',
+  clouds: null, cloudsAt: null,
+  filters: { open: false, sun: false, cafe: false, bar: false, seat: false, ...store.get('filters3', {}) },
+  places: [], source: 'osm', rows: [], selected: null, placesKey: '',
+  detent: 'medium',
+};
+
+/* ================= Karte ================= */
 
 const map = new maplibregl.Map({
-  container: 'map',
-  style: STYLE,
-  center: [START.lng, START.lat],
-  zoom: START.zoom,
-  minZoom: 10,
-  maxZoom: 19,
-  hash: true,
-  dragRotate: false,
-  pitchWithRotate: false,
-  touchPitch: false,
-  attributionControl: false,
+  container: 'map', style: STYLE, center: [START.lng, START.lat], zoom: START.zoom,
+  minZoom: 10, maxZoom: 19, hash: true,
+  dragRotate: false, pitchWithRotate: false, touchPitch: false, attributionControl: false,
 });
 map.touchZoomRotate.disableRotation();
 map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
 
-let layer;
-let me;
+let layer, places, me;
 
 map.on('load', async () => {
-  // Basiskarte etwas ruhiger: keine Haus-Nummern, keine POI-Symbole
-  for (const l of map.getStyle().layers) {
-    if (/housenum|poi/i.test(l.id)) map.setLayoutProperty(l.id, 'visibility', 'none');
-  }
+  for (const l of map.getStyle().layers) if (/housenum|poi/i.test(l.id)) map.setLayoutProperty(l.id, 'visibility', 'none');
   const firstLabel = map.getStyle().layers.find((l) => l.type === 'symbol')?.id;
   let tileUrl;
-  try {
-    tileUrl = (await (await fetch(TILES)).json()).tiles[0];
-  } catch {
-    notice('Kartendaten nicht erreichbar');
-    return;
-  }
+  try { tileUrl = (await (await fetch(TILES)).json()).tiles[0]; } catch { notice('Kartendaten nicht erreichbar'); return; }
   layer = new SunLayer(map, tileUrl, { beforeId: firstLabel, onStatus });
+  places = new Places(layer);
+  addPlaceLayers();
   document.querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show');
   selectDay(0, true);
   loadClouds();
+  refreshPlaces();
 });
 
 map.on('moveend', () => {
   updateSun();
+  refreshPlaces();
   const c = map.getCenter();
   if (!state.cloudsAt || distKm(c, state.cloudsAt) > 5) loadClouds();
 });
+
+function addPlaceLayers() {
+  map.addSource('places', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+  map.addLayer({ id: 'places-hit', type: 'circle', source: 'places', paint: { 'circle-radius': 16, 'circle-opacity': 0 } });
+  map.addLayer({
+    id: 'places', type: 'circle', source: 'places',
+    paint: {
+      'circle-radius': ['case', ['get', 'selected'], 9, 6.5],
+      'circle-color': ['match', ['get', 'state'], 'sun', '#f5a524', 'part', '#f8c56a', 'closed', '#ffffff', '#8a8f99'],
+      'circle-stroke-color': ['case', ['get', 'selected'], '#111318', ['==', ['get', 'state'], 'closed'], '#8a8f99', '#ffffff'],
+      'circle-stroke-width': ['case', ['get', 'selected'], 3, 2],
+    },
+  });
+  map.addLayer({
+    id: 'places-label', type: 'symbol', source: 'places', minzoom: 16.5,
+    layout: {
+      'text-field': ['get', 'name'], 'text-font': ['Noto Sans Regular'], 'text-size': 12,
+      'text-anchor': 'top', 'text-offset': [0, 0.9], 'text-max-width': 9, 'text-optional': true,
+      'symbol-sort-key': ['get', 'rank'],
+    },
+    paint: { 'text-color': '#111318', 'text-halo-color': '#ffffff', 'text-halo-width': 1.6 },
+  });
+  map.on('click', 'places-hit', (e) => { const f = e.features?.[0]; if (f) select(f.properties.id); });
+  map.on('mouseenter', 'places-hit', () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', 'places-hit', () => { map.getCanvas().style.cursor = ''; });
+}
 
 function onStatus(s) {
   if (s === 'zoom') notice('Näher heranzoomen, um die Sonne zu sehen');
@@ -78,7 +108,7 @@ function notice(text) {
   el.hidden = false;
 }
 
-/* ---------- Zeit ---------- */
+/* ================= Zeit ================= */
 
 function dayStart(offset) {
   const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + offset);
@@ -89,21 +119,17 @@ function selectDay(offset, initial = false) {
   const c = map.getCenter();
   let times = SunCalc.getTimes(dayStart(offset), c.lat, c.lng);
   const now = new Date();
-  if (initial && offset === 0 && now > times.sunset) {
-    offset = 1;
-    times = SunCalc.getTimes(dayStart(1), c.lat, c.lng);
-  }
+  if (initial && offset === 0 && now > times.sunset) { offset = 1; times = SunCalc.getTimes(dayStart(1), c.lat, c.lng); }
   state.dayOffset = offset;
   const start = new Date(times.sunrise);
   start.setMinutes(Math.ceil(start.getMinutes() / STEP) * STEP, 0, 0);
   state.steps = [];
   for (let t = start.getTime(); t <= times.sunset.getTime(); t += STEP * 60000) state.steps.push(new Date(t));
-  state.sunrise = times.sunrise;
-  state.sunset = times.sunset;
-
+  state.suns = state.steps.map((t) => sunVector(SunCalc.getPosition(t, c.lat, c.lng)));
+  state.dayKey = `${offset}:${c.lat.toFixed(2)},${c.lng.toFixed(2)}`;
+  state.sunrise = times.sunrise; state.sunset = times.sunset;
   const target = offset === 0 && now >= state.steps[0] && now <= times.sunset ? now : times.solarNoon;
-  state.idx = state.steps.reduce((best, t, i) => (Math.abs(t - target) < Math.abs(state.steps[best] - target) ? i : best), 0);
-
+  state.idx = nearestIdx(target);
   const s = $('slider');
   s.max = state.steps.length - 1;
   s.value = state.idx;
@@ -111,6 +137,11 @@ function selectDay(offset, initial = false) {
   $('set').textContent = `Untergang ${hhmm(times.sunset)}`;
   renderDays();
   updateSun();
+  renderPlaces();
+}
+
+function nearestIdx(t) {
+  return state.steps.reduce((best, s, i) => (Math.abs(s - t) < Math.abs(state.steps[best] - t) ? i : best), 0);
 }
 
 function renderDays() {
@@ -126,25 +157,23 @@ function renderDays() {
   }
 }
 
+const SIDE = ['Nord', 'Nordost', 'Ost', 'Südost', 'Süd', 'Südwest', 'West', 'Nordwest'];
+const LONG = { N: 'Norden', NNO: 'Nordnordost', NO: 'Nordost', ONO: 'Ostnordost', O: 'Osten', OSO: 'Ostsüdost', SO: 'Südost', SSO: 'Südsüdost', S: 'Süden', SSW: 'Südsüdwest', SW: 'Südwest', WSW: 'Westsüdwest', W: 'Westen', WNW: 'Westnordwest', NW: 'Nordwest', NNW: 'Nordnordwest' };
+
 function updateSun() {
   if (!layer || !state.steps.length) return;
   const t = state.steps[state.idx];
-  const c = map.getCenter();
-  const sun = sunVector(SunCalc.getPosition(t, c.lat, c.lng));
+  const sun = state.suns[state.idx];
   layer.setSun(sun);
   $('time').textContent = hhmm(t);
-  $('sun').textContent = sun.altDeg > 0 ? `Sonne ${Math.round(sun.altDeg)}° hoch, aus ${compassLong(sun.bearingDeg)}` : 'Sonne unter dem Horizont';
-  const now = new Date();
-  $('now').hidden = state.dayOffset === 0 && Math.abs(t - now) <= STEP * 60000;
+  $('sun').textContent = sun.altDeg > 0 ? `Sonne ${Math.round(sun.altDeg)}° aus ${LONG[compass(sun.bearingDeg)]}` : 'Sonne unter dem Horizont';
+  $('now').hidden = state.dayOffset === 0 && Math.abs(t - new Date()) <= STEP * 60000;
   const pct = (state.idx / Math.max(1, state.steps.length - 1)) * 100;
-  $('slider').style.setProperty('--track', `linear-gradient(90deg, var(--sun) ${pct}%, var(--line) ${pct}%)`);
+  $('slider').style.setProperty('--track', `linear-gradient(90deg, var(--sun) ${pct}%, var(--separator) ${pct}%)`);
   renderCloud(t);
 }
 
-const LONG = { N: 'Norden', NNO: 'Nordnordost', NO: 'Nordost', ONO: 'Ostnordost', O: 'Osten', OSO: 'Ostsüdost', SO: 'Südost', SSO: 'Südsüdost', S: 'Süden', SSW: 'Südsüdwest', SW: 'Südwest', WSW: 'Westsüdwest', W: 'Westen', WNW: 'Westnordwest', NW: 'Nordwest', NNW: 'Nordnordwest' };
-const compassLong = (deg) => LONG[compass(deg)];
-
-/* ---------- Bewölkung ---------- */
+/* ================= Bewölkung ================= */
 
 async function loadClouds() {
   const c = map.getCenter();
@@ -153,18 +182,14 @@ async function loadClouds() {
     const u = `https://api.open-meteo.com/v1/forecast?latitude=${c.lat.toFixed(3)}&longitude=${c.lng.toFixed(3)}&hourly=cloud_cover&timezone=auto&forecast_days=7`;
     const j = await (await fetch(u)).json();
     state.clouds = new Map(j.hourly.time.map((t, i) => [t.slice(0, 13), j.hourly.cloud_cover[i]]));
-  } catch {
-    state.clouds = null;
-  }
+  } catch { state.clouds = null; }
   if (state.steps.length) renderCloud(state.steps[state.idx]);
 }
 
 function renderCloud(t) {
-  const el = $('cloud');
-  if (!state.clouds) { el.textContent = ''; return; }
   const p = (n) => String(n).padStart(2, '0');
-  const v = state.clouds.get(`${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}T${p(t.getHours())}`);
-  el.textContent = v == null ? '' : `Bewölkung ${Math.round(v)} %`;
+  const v = state.clouds?.get(`${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}T${p(t.getHours())}`);
+  $('cloud').textContent = v == null ? '' : `Bewölkung ${Math.round(v)} %`;
 }
 
 function distKm(a, b) {
@@ -172,7 +197,310 @@ function distKm(a, b) {
   return Math.hypot(dx, dy);
 }
 
-/* ---------- Standort ---------- */
+/* ================= Orte ================= */
+
+let placesRun = 0;
+async function refreshPlaces() {
+  if (!places) return;
+  const run = ++placesRun;
+  if (map.getZoom() < PLACES_ZOOM) {
+    state.places = [];
+    renderPlaces();
+    return;
+  }
+  const keys = layer.visibleTiles();
+  const key = keys.join(',');
+  if (key !== state.placesKey) {
+    state.placesKey = key;
+    state.fullDone = false;
+    state.haveOsm = false;
+    $('listMeta').textContent = 'Lade …';
+    const { fast, full } = places.inTiles(keys);
+    state.fastP = fast
+      .then((list) => { if (state.placesKey === key && !state.haveOsm) { state.places = list; state.source = 'tiles'; } })
+      .catch(() => { if (state.placesKey === key) $('listMeta').textContent = 'Nicht erreichbar'; });
+    full.then(async (list) => {
+      if (state.placesKey !== key) return;
+      state.fullDone = true;
+      if (list) { state.places = list; state.source = 'osm'; state.haveOsm = true; }
+      try { await places.prepare(visiblePlaces()); } catch { /* egal */ }
+      if (state.placesKey === key) renderPlaces();
+    });
+  }
+  await state.fastP;
+  if (run !== placesRun) return;
+  const inView = visiblePlaces();
+  try { await places.prepare(inView); } catch { return; }
+  if (run !== placesRun) return;
+  renderPlaces();
+}
+
+function visiblePlaces() {
+  const b = map.getBounds();
+  const c = map.getCenter();
+  return state.places
+    .filter((p) => b.contains([p.lon, p.lat]) || p.id === state.selected)
+    .map((p) => ({ p, d: distKm(c, { lat: p.lat, lng: p.lon }) }))
+    .sort((a, b2) => a.d - b2.d)
+    .slice(0, MAX_LIST)
+    .map((x) => x.p);
+}
+
+/** Sonne und Öffnung eines Ortes für den gewählten Tag (gecacht). */
+function info(p) {
+  if (!places?.index) return null;
+  const { sun, facadeDeg } = places.sunTimeline(p, state.dayKey, state.suns);
+  p._open ??= new Map();
+  if (!p._open.has(state.dayKey)) p._open.set(state.dayKey, openTimeline(p, state.steps));
+  return { sun, open: p._open.get(state.dayKey), facadeDeg };
+}
+
+function sunState(v) { return v < 0 ? 'night' : v >= SUNNY ? 'sun' : v > 0 ? 'part' : 'shade'; }
+
+function sunText(sun, i) {
+  const v = sun[i], st = sunState(v), steps = state.steps;
+  if (st === 'night') return { st, text: 'Keine Sonne' };
+  if (st === 'sun') {
+    let j = i; while (j < sun.length && sun[j] >= SUNNY) j++;
+    return { st, text: j >= sun.length ? 'Sonne bis Sonnenuntergang' : `Sonne bis ${hhmm(steps[j])}` };
+  }
+  let j = i; while (j < sun.length && !(sun[j] >= SUNNY)) j++;
+  const later = j < sun.length ? `Sonne ab ${hhmm(steps[j])}` : 'Keine Sonne mehr';
+  return { st, text: st === 'part' ? `Halbschatten · ${later}` : `Schatten · ${later}` };
+}
+
+function openText(p, t, code) {
+  if (!p.oh) return { cls: '', text: state.source === 'tiles' ? '' : 'Keine Öffnungszeiten' };
+  if (p.oh === 'invalid' || code === 2) return { cls: '', text: 'Öffnungszeiten unklar' };
+  let next = null;
+  try { next = p.oh.getNextChange(t); } catch { /* egal */ }
+  const when = (n) => {
+    if (!n) return '';
+    if (n.toDateString() === t.toDateString()) return hhmm(n);
+    if (n - t < 6 * 864e5) return `${fmtWeekday.format(n)} ${hhmm(n)}`;
+    return `am ${fmtDate.format(n)}`;
+  };
+  if (code === 1) return { cls: 'is-open', text: next ? `Geöffnet bis ${when(next)}` : 'Geöffnet' };
+  return { cls: 'is-closed', text: next ? `Geschlossen · öffnet ${when(next)}` : 'Geschlossen' };
+}
+
+function passes(p, inf, i) {
+  const f = state.filters;
+  if (f.cafe !== f.bar && !f[p.kind]) return false;
+  if (f.seat && p.seating !== true) return false;
+  if (f.open && inf.open[i] !== 1) return false;
+  if (f.sun && !(inf.sun[i] >= SUNNY)) return false;
+  return true;
+}
+
+function renderPlaces() {
+  if (!state.steps.length) return;
+  const i = state.idx, t = state.steps[i];
+  const zoomOk = map.getZoom() >= PLACES_ZOOM;
+  const inView = zoomOk ? visiblePlaces() : [];
+  const rows = [];
+  let unknownHours = 0;
+  for (const p of inView) {
+    const inf = info(p);
+    if (!inf) continue;
+    if (state.filters.open && inf.open[i] === 2) unknownHours++;
+    if (!passes(p, inf, i) && p.id !== state.selected) continue;
+    rows.push({ p, inf });
+  }
+  const rank = ({ inf }) => {
+    const v = inf.sun[i], closed = inf.open[i] === 0;
+    if (closed) return 5;
+    if (v >= SUNNY) return 0;
+    if (v > 0) return 1;
+    for (let j = i + 1; j < inf.sun.length; j++) if (inf.sun[j] >= SUNNY) return 2;
+    return 3;
+  };
+  rows.sort((a, b) => rank(a) - rank(b));
+  state.rows = rows;
+
+  // Karte
+  map.getSource('places')?.setData({
+    type: 'FeatureCollection',
+    features: rows.map(({ p, inf }, k) => {
+      const st = inf.open[i] === 0 ? 'closed' : sunState(inf.sun[i]);
+      return { type: 'Feature', properties: { id: p.id, name: p.name, state: st, selected: p.id === state.selected, rank: k },
+        geometry: { type: 'Point', coordinates: [p.lon, p.lat] } };
+    }),
+  });
+
+  if (state.selected) { renderDetail(); return; }
+
+  // Liste
+  const sunny = rows.filter(({ inf }) => inf.sun[i] >= SUNNY && inf.open[i] !== 0).length;
+  $('listTitle').textContent = !zoomOk ? 'Cafés und Bars' : rows.length ? `${rows.length} ${rows.length === 1 ? 'Ort' : 'Orte'}` : 'Keine Orte';
+  $('listMeta').textContent = zoomOk && rows.length ? `${sunny} in der Sonne` : '';
+  const ul = $('list');
+  ul.replaceChildren();
+  const note = (text) => { const li = document.createElement('li'); li.className = 'empty'; li.textContent = text; ul.append(li); };
+  if (!zoomOk) { note('Näher heranzoomen, um Cafés und Bars zu sehen.'); return; }
+  if (state.source === 'tiles') note(state.fullDone ? 'Öffnungszeiten gerade nicht abrufbar. Gezeigt werden Name, Lage und Sonne.' : 'Öffnungszeiten werden geladen …');
+  if (state.filters.open && unknownHours) note(`${unknownHours} ${unknownHours === 1 ? 'Ort' : 'Orte'} ohne Öffnungszeiten ausgeblendet.`);
+  if (!rows.length) { note('Mit diesen Filtern gibt es hier nichts. Filter lockern oder Karte verschieben.'); return; }
+  for (const { p, inf } of rows) {
+    const s = sunText(inf.sun, i), o = openText(p, t, inf.open[i]);
+    const li = document.createElement('li');
+    const closed = inf.open[i] === 0;
+    li.innerHTML = `<button type="button" class="row">
+      <span class="status-dot ${closed ? 'closed' : s.st}" aria-hidden="true"></span>
+      <span class="row-main">
+        <span class="row-title">${esc(p.name)}</span>
+        <span class="row-sub"><span class="${s.st === 'sun' && !closed ? 'is-sun' : ''}">${s.text}</span></span>
+        ${o.text ? `<span class="row-sub"><span class="${o.cls}">${o.text}</span> · ${subLabel(p)}</span>` : `<span class="row-sub">${subLabel(p)}</span>`}
+      </span>
+    </button>`;
+    li.firstChild.onclick = () => select(p.id);
+    ul.append(li);
+  }
+}
+
+/* ================= Detail ================= */
+
+function select(id) {
+  state.selected = id;
+  const p = state.places.find((x) => x.id === id);
+  if (p) {
+    const pad = window.innerWidth >= 760 ? 0 : Math.min(window.innerHeight * 0.55, sheetHeights().medium) / 2;
+    map.easeTo({ center: [p.lon, p.lat], offset: [0, -pad], zoom: Math.max(map.getZoom(), 17), duration: 500 });
+  }
+  $('listView').hidden = true;
+  $('detailView').hidden = false;
+  $('content').scrollTop = 0;
+  if (state.detent === 'small') setDetent('medium');
+  renderPlaces();
+}
+
+function deselect() {
+  state.selected = null;
+  $('listView').hidden = false;
+  $('detailView').hidden = true;
+  renderPlaces();
+}
+
+function renderDetail() {
+  const p = state.places.find((x) => x.id === state.selected);
+  const v = $('detailView');
+  if (!p) { deselect(); return; }
+  const inf = info(p);
+  if (!inf) return;
+  const i = state.idx, t = state.steps[i];
+  const s = sunText(inf.sun, i), o = openText(p, t, inf.open[i]);
+  const tg = p.tags || {};
+  const addr = [tg['addr:street'] && `${tg['addr:street']} ${tg['addr:housenumber'] || ''}`.trim(), tg['addr:postcode'] && `${tg['addr:postcode']} ${tg['addr:city'] || ''}`.trim()].filter(Boolean).join(', ');
+  const web = tg.website || tg['contact:website'];
+  const phone = tg.phone || tg['contact:phone'];
+  const total = [...inf.sun].filter((x) => x >= SUNNY).length * STEP;
+
+  // Tagesleiste aus Sonnen-Abschnitten
+  const n = state.steps.length;
+  let segs = '';
+  for (let j = 0; j < n;) {
+    const st = sunState(inf.sun[j]);
+    let k = j; while (k < n && sunState(inf.sun[k]) === st) k++;
+    const col = st === 'sun' ? 'var(--sun)' : st === 'part' ? 'var(--sun-soft)' : 'transparent';
+    if (col !== 'transparent') segs += `<i style="left:${(j / n) * 100}%;width:${((k - j) / n) * 100}%;background:${col}"></i>`;
+    j = k;
+  }
+  const week = weekHours(p, t);
+  const dayName = state.dayOffset === 0 ? 'heute' : state.dayOffset === 1 ? 'morgen' : `am ${fmtWeekday.format(t)}`;
+
+  v.innerHTML = `
+    <button type="button" class="back" id="back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>Alle Orte</button>
+    <h2>${esc(p.name)}</h2>
+    <div class="subtitle">${subLabel(p)}${addr ? ' · ' + esc(addr) : ''}</div>
+    <div class="actions">
+      <a class="action primary" href="https://maps.apple.com/?daddr=${p.lat},${p.lon}&q=${encodeURIComponent(p.name)}" target="_blank" rel="noopener">Route</a>
+      ${web ? `<a class="action" href="${esc(web)}" target="_blank" rel="noopener">Website</a>` : ''}
+      ${phone ? `<a class="action" href="tel:${esc(phone.replace(/\s/g, ''))}">Anrufen</a>` : ''}
+    </div>
+
+    <section class="group">
+      <h3>Sonne ${dayName}</h3>
+      <div class="status-line ${s.st === 'sun' ? 'is-sun' : ''}">${s.text}</div>
+      <div class="dayline" aria-hidden="true">${segs}<i class="now" style="left:${(i / n) * 100}%"></i></div>
+      <div class="dayline-scale"><span>${hhmm(state.sunrise)}</span><span>${hhmm(state.sunset)}</span></div>
+      <p class="note">${total ? `Insgesamt ${total >= 60 ? Math.floor(total / 60) + ' h ' : ''}${total % 60 ? (total % 60) + ' min' : ''} Sonne am Sitzplatz.` : 'Der Sitzplatz bekommt an diesem Tag keine Sonne.'}
+      ${inf.facadeDeg != null ? ` Tische vermutlich auf der ${SIDE[Math.round(inf.facadeDeg / 45) % 8]}seite.` : ''}</p>
+    </section>
+
+    <section class="group">
+      <h3>Öffnungszeiten</h3>
+      ${o.text ? `<div class="status-line ${o.cls}">${o.text}</div>` : ''}
+      ${week ? `<ul class="kv">${week.map((r) => `<li class="${r.today ? 'today' : ''}"><span>${r.day}</span><span class="v">${r.text}</span></li>`).join('')}</ul>`
+        : `<p class="note">${state.source === 'tiles' ? 'Gerade nicht abrufbar.' : 'In OpenStreetMap nicht eingetragen.'}</p>`}
+    </section>
+
+    <section class="group">
+      <h3>Details</h3>
+      <ul class="kv">
+        <li><span>Außenplätze</span><span class="v">${p.seating === true ? 'Ja' : p.seating === false ? 'Nein' : 'Unbekannt'}</span></li>
+        <li><span>Art</span><span class="v">${subLabel(p)}</span></li>
+      </ul>
+      ${p.osm ? `<p class="note"><a href="https://www.openstreetmap.org/edit?${p.osm.replace('/', '=')}" target="_blank" rel="noopener">Angaben in OpenStreetMap ergänzen</a></p>` : ''}
+    </section>`;
+  $('back').onclick = deselect;
+}
+
+/* ================= Panel ================= */
+
+function sheetHeights() {
+  const H = window.innerHeight;
+  const small = $('grabber').offsetHeight + $('timebar').offsetHeight + 1;
+  const top = document.querySelector('.chips').getBoundingClientRect().bottom + 8;
+  return { small, medium: Math.max(small + 120, Math.round(H * 0.45)), large: H - top };
+}
+
+function setDetent(d, animate = true) {
+  if (window.innerWidth >= 760) return;
+  state.detent = d;
+  const s = $('sheet');
+  s.classList.toggle('animate', animate);
+  s.dataset.detent = d;
+  document.body.classList.toggle('sheet-large', d === 'large');
+  const h = sheetHeights()[d];
+  document.documentElement.style.setProperty('--sheet-h', h + 'px');
+}
+
+function bindSheet() {
+  const s = $('sheet');
+  let y0 = 0, h0 = 0, drag = false, moved = false;
+  const start = (e) => {
+    if (e.target.closest('button, input, nav')) return;
+    drag = true; moved = false; y0 = e.clientY; h0 = s.offsetHeight;
+    s.classList.remove('animate');
+  };
+  const move = (e) => {
+    if (!drag) return;
+    const dy = y0 - e.clientY;
+    if (Math.abs(dy) > 4) moved = true;
+    const hs = sheetHeights();
+    document.documentElement.style.setProperty('--sheet-h', Math.max(hs.small, Math.min(hs.large, h0 + dy)) + 'px');
+  };
+  const end = (e) => {
+    if (!drag) return;
+    drag = false;
+    const order = ['small', 'medium', 'large'];
+    if (!moved) { setDetent(order[(order.indexOf(state.detent) + 1) % 3]); return; }
+    const hs = sheetHeights(), h = s.offsetHeight, v = y0 - e.clientY;
+    let d = order.reduce((a, b) => (Math.abs(hs[b] - h) < Math.abs(hs[a] - h) ? b : a));
+    if (Math.abs(v) > 50 && d === state.detent) d = order[Math.max(0, Math.min(2, order.indexOf(d) + (v > 0 ? 1 : -1)))];
+    setDetent(d);
+  };
+  $('grabber').addEventListener('pointerdown', start);
+  $('timebar').addEventListener('pointerdown', start);
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
+  $('grabber').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); const o = ['small', 'medium', 'large']; setDetent(o[(o.indexOf(state.detent) + 1) % 3]); }
+  });
+}
+
+/* ================= Standort ================= */
 
 function locate(fly = true) {
   if (!navigator.geolocation) return;
@@ -185,22 +513,30 @@ function locate(fly = true) {
     } else me.setLngLat(ll);
     $('locate').classList.add('active');
     if (fly) map.easeTo({ center: ll, zoom: Math.max(map.getZoom(), 16.4), duration: 600 });
-  }, () => notice(''), { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 });
+  }, () => {}, { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 });
 }
 
-/* ---------- Bedienung ---------- */
+/* ================= Bedienung ================= */
 
-$('slider').addEventListener('input', (e) => { state.idx = +e.target.value; updateSun(); });
+function syncChips() {
+  document.querySelectorAll('[data-filter]').forEach((b) => b.setAttribute('aria-pressed', !!state.filters[b.dataset.filter]));
+}
+
+document.querySelectorAll('[data-filter]').forEach((b) => {
+  b.onclick = () => {
+    state.filters[b.dataset.filter] = !state.filters[b.dataset.filter];
+    store.set('filters3', state.filters);
+    syncChips();
+    renderPlaces();
+  };
+});
+$('slider').addEventListener('input', (e) => { state.idx = +e.target.value; updateSun(); renderPlaces(); });
 $('now').onclick = () => selectDay(0);
 $('locate').onclick = () => locate(true);
+window.addEventListener('resize', () => setDetent(state.detent, false));
 
-const setPanelH = () => {
-  const h = document.querySelector('.panel').offsetHeight;
-  document.documentElement.style.setProperty('--panel-h', h + 8 + 'px');
-};
-new ResizeObserver(setPanelH).observe(document.querySelector('.panel'));
-
-// Ohne gespeicherte Kartenposition im Link: zum eigenen Standort
+syncChips();
+bindSheet();
+setDetent('medium', false);
 if (!location.hash) locate(true);
-
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

@@ -84,6 +84,35 @@ export class SunLayer {
   }
 
   /** Sichtbarer Ausschnitt plus Rand, in Web-Mercator (0..1). */
+  /** Kachel-Schlüssel um einen Punkt (mit Rand für lange Schatten). */
+  tilesAround(lat, lon, padM = MAX_SHADOW_M) {
+    const n = 2 ** Z;
+    const mPerUnit = 40075016.7 * Math.cos((lat * Math.PI) / 180);
+    const x = lon2x(lon), y = lat2y(lat), pad = padM / mPerUnit;
+    const keys = [];
+    for (let tx = Math.floor((x - pad) * n); tx <= Math.floor((x + pad) * n); tx++)
+      for (let ty = Math.floor((y - pad) * n); ty <= Math.floor((y + pad) * n); ty++) keys.push(`${tx}/${ty}`);
+    return keys;
+  }
+
+  /** Kacheln laden: { buildings, water, pois } zusammengefasst. */
+  async load(keys) {
+    const tiles = await Promise.all(keys.map((k) => this._tile(k)));
+    return {
+      buildings: tiles.flatMap((t) => t.buildings),
+      pois: tiles.flatMap((t) => t.pois),
+    };
+  }
+
+  /** Sichtbare Kacheln (ohne Rand). */
+  visibleTiles() {
+    const b = this.map.getBounds();
+    const n = 2 ** Z, keys = [];
+    for (let x = Math.floor(lon2x(b.getWest()) * n); x <= Math.floor(lon2x(b.getEast()) * n); x++)
+      for (let y = Math.floor(lat2y(b.getNorth()) * n); y <= Math.floor(lat2y(b.getSouth()) * n); y++) keys.push(`${x}/${y}`);
+    return keys;
+  }
+
   _region() {
     const map = this.map;
     const c = map.getCanvas();
@@ -115,7 +144,7 @@ export class SunLayer {
         const [x, y] = key.split('/').map(Number);
         const url = this.tileUrl.replace('{z}', Z).replace('{x}', x).replace('{y}', y);
         const r = await fetch(url);
-        if (r.status === 204 || r.status === 404) return { buildings: [], water: [] };
+        if (r.status === 204 || r.status === 404) return { buildings: [], water: [], pois: [] };
         if (!r.ok) throw new Error('Kachel ' + r.status);
         const vt = new VectorTile(new Pbf(new Uint8Array(await r.arrayBuffer())));
         const layer = vt.layers.building;
@@ -133,6 +162,18 @@ export class SunLayer {
           return gj.type === 'Polygon' ? [gj.coordinates] : gj.type === 'MultiPolygon' ? gj.coordinates : [];
         };
         // Wasser bekommt keine Sonnenfarbe – dort sitzt niemand
+        // Cafés und Bars aus den Kacheln (Ersatz, falls Overpass nicht antwortet)
+        const pois = [];
+        const pl = vt.layers.poi;
+        for (let i = 0; pl && i < pl.length; i++) {
+          const f = pl.feature(i);
+          const sub = f.properties.subclass;
+          const kind = sub === 'cafe' ? 'cafe' : (sub === 'bar' || sub === 'pub' || sub === 'biergarten') ? 'bar' : null;
+          if (!kind || !f.properties.name) continue;
+          const g = f.toGeoJSON(x, y, Z).geometry;
+          if (g.type !== 'Point') continue;
+          pois.push({ id: 't' + f.id, name: f.properties.name, kind, sub, lon: g.coordinates[0], lat: g.coordinates[1], tags: {} });
+        }
         const water = [];
         const wl = vt.layers.water;
         for (let i = 0; wl && i < wl.length; i++) {
@@ -152,7 +193,7 @@ export class SunLayer {
             out.push({ outer: [rings[0]], inner: rings.slice(1), h, minH });
           }
         }
-        return { buildings: out, water };
+        return { buildings: out, water, pois };
       })();
       p.catch(() => this.tiles.delete(key)); // bei Fehler später erneut versuchen
       this.tiles.set(key, p);

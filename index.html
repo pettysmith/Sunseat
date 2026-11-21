@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Sunseat</title>
-  <meta name="description" content="Sonnen-Karte: wo in der Stadt gerade Sonne auf den Boden fällt.">
+  <meta name="description" content="Sonnen-Karte mit Cafés und Bars: wo fällt gerade Sonne auf die Tische?">
   <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
@@ -16,34 +16,59 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="map" class="map"></div>
+  <div id="map" class="map" role="application" aria-label="Karte"></div>
 
   <header class="top">
-    <div class="brand">Sunseat</div>
-    <button id="locate" class="square" type="button" aria-label="Mein Standort">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><circle cx="12" cy="12" r="7.5" fill="none"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3"/></svg>
-    </button>
+    <div class="topbar">
+      <h1 class="brand">Sunseat</h1>
+      <button id="locate" class="icon-button" type="button" aria-label="Mein Standort">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle class="dot" cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7.5"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3"/></svg>
+      </button>
+    </div>
+    <div class="chips" role="group" aria-label="Filter">
+      <button type="button" class="chip" data-filter="open" aria-pressed="false">Geöffnet</button>
+      <button type="button" class="chip" data-filter="sun" aria-pressed="false">In der Sonne</button>
+      <button type="button" class="chip" data-filter="cafe" aria-pressed="false">Cafés</button>
+      <button type="button" class="chip" data-filter="bar" aria-pressed="false">Bars</button>
+      <button type="button" class="chip" data-filter="seat" aria-pressed="false">Außenplätze</button>
+    </div>
   </header>
 
-  <p id="notice" class="notice" hidden></p>
+  <p id="notice" class="notice" role="status" hidden></p>
 
-  <section class="panel" aria-label="Zeit">
-    <nav id="days" class="days" aria-label="Tag"></nav>
-    <div class="row">
-      <output id="time" class="time">–</output>
-      <span id="sun" class="meta"></span>
-      <button id="now" class="link" type="button" hidden>Jetzt</button>
+  <section id="sheet" class="sheet" data-detent="medium" aria-label="Zeit und Orte">
+    <div class="grabber-area" id="grabber" role="button" tabindex="0" aria-label="Panel vergrößern oder verkleinern"><span class="grabber"></span></div>
+
+    <div class="timebar" id="timebar">
+      <nav id="days" class="segmented" aria-label="Tag"></nav>
+      <div class="time-row">
+        <output id="time" class="time">–</output>
+        <span id="sun" class="secondary"></span>
+        <button id="now" class="text-button" type="button" hidden>Jetzt</button>
+      </div>
+      <input id="slider" class="slider" type="range" min="0" max="100" value="0" step="1" aria-label="Uhrzeit">
+      <div class="ends secondary"><span id="rise"></span><span id="cloud"></span><span id="set"></span></div>
     </div>
-    <input id="slider" class="slider" type="range" min="0" max="100" value="0" step="1" aria-label="Uhrzeit">
-    <div class="ends"><span id="rise"></span><span id="set"></span></div>
-    <div class="legend">
-      <span><i class="sw sw-sun"></i>Sonne am Boden</span>
-      <span><i class="sw sw-shade"></i>Schatten und Dächer</span>
-      <span id="cloud" class="meta"></span>
+
+    <div class="sheet-content" id="content">
+      <div id="listView">
+        <div class="list-header">
+          <h2 id="listTitle">Orte</h2>
+          <span id="listMeta" class="secondary"></span>
+        </div>
+        <ul id="list" class="list"></ul>
+        <p class="footnote secondary">
+          <span class="legend"><i class="sw sw-sun"></i>Sonne am Boden</span>
+          <span class="legend"><i class="sw sw-shade"></i>Schatten und Dächer</span><br>
+          Lage der Tische geschätzt: 3 m vor der nächsten Fassade. Daten © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, Karte <a href="https://openfreemap.org">OpenFreeMap</a>, Wetter <a href="https://open-meteo.com">Open-Meteo</a>.
+        </p>
+      </div>
+      <article id="detailView" class="detail" hidden></article>
     </div>
   </section>
 
   <script src="vendor/suncalc.js"></script>
+  <script src="vendor/opening_hours.js"></script>
   <script src="vendor/maplibre-gl.js"></script>
   <script type="module" src="app.js"></script>
 </body>
