@@ -2,6 +2,7 @@
 // aktuellen Sonnenstand, gezeichnet als Fläche unter den Kartenbeschriftungen.
 import { VectorTile, Pbf } from './vendor/vector-tile.js';
 import { makeProjection, shadowShapes, roofRings } from './shadow.js';
+import { fetchTrees, toLocal, treeShadows } from './trees.js';
 
 /* global maplibregl */
 
@@ -12,6 +13,7 @@ const OVERSCAN = 0.25;        // Rand um den sichtbaren Ausschnitt (je Seite)
 
 const COLORS = {
   sun: 'rgba(255, 166, 20, 0.40)',
+  sunCloudy: 'rgba(255, 166, 20, 0.14)',
   dimSolid: 'rgb(22, 27, 38)',
   dimAlpha: 0.17,
   night: 'rgba(22, 27, 38, 0.30)',
@@ -21,6 +23,12 @@ const lon2x = (lon) => (lon + 180) / 360;
 const lat2y = (lat) => { const s = Math.sin((lat * Math.PI) / 180); return 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI); };
 const x2lon = (x) => x * 360 - 180;
 const y2lat = (y) => (360 / Math.PI) * Math.atan(Math.exp((0.5 - y) * 2 * Math.PI)) - 90;
+
+function centroid(ring) {
+  let x = 0, y = 0;
+  for (const p of ring) { x += p[0]; y += p[1]; }
+  return [x / ring.length, y / ring.length];
+}
 
 export class SunLayer {
   /**
@@ -50,6 +58,19 @@ export class SunLayer {
     this.refresh();
   }
 
+  /** Genaues 3D-Modell (LoD2) für ein Teilgebiet; ersetzt dort die OSM-Gebäude. */
+  setLod2(lod) {
+    this.lod2 = lod;
+    this.refresh();
+  }
+
+  /** Bei bedecktem Himmel die Sonnenfläche deutlich zurücknehmen. */
+  setCloudy(cloudy) {
+    if (this.cloudy === cloudy) return;
+    this.cloudy = cloudy;
+    this.refresh();
+  }
+
   /** Neu zeichnen, höchstens einmal pro Bild. */
   refresh() {
     if (this._frame) return;
@@ -73,6 +94,7 @@ export class SunLayer {
       const tiles = await Promise.all(need.map((k) => this._tile(k)));
       buildings = tiles.flatMap((t) => t.buildings);
       water = tiles.flatMap((t) => t.water);
+      this._trees = tiles.flatMap((t) => t.trees);
     } catch {
       this.onStatus('error');
       return;
@@ -102,6 +124,7 @@ export class SunLayer {
     return {
       buildings: tiles.flatMap((t) => t.buildings),
       pois: tiles.flatMap((t) => t.pois),
+      trees: tiles.flatMap((t) => t.trees),
     };
   }
 
@@ -144,8 +167,10 @@ export class SunLayer {
       const p = (async () => {
         const [x, y] = key.split('/').map(Number);
         const url = this.tileUrl.replace('{z}', Z).replace('{x}', x).replace('{y}', y);
+        const n = 2 ** Z;
+        const treesP = fetchTrees({ w: x2lon(x / n), e: x2lon((x + 1) / n), n: y2lat(y / n), s: y2lat((y + 1) / n) });
         const r = await fetch(url);
-        if (r.status === 204 || r.status === 404) return { buildings: [], water: [], pois: [] };
+        if (r.status === 204 || r.status === 404) return { buildings: [], water: [], pois: [], trees: [] };
         if (!r.ok) throw new Error('Kachel ' + r.status);
         const vt = new VectorTile(new Pbf(new Uint8Array(await r.arrayBuffer())));
         const layer = vt.layers.building;
@@ -194,7 +219,7 @@ export class SunLayer {
             out.push({ outer: [rings[0]], inner: rings.slice(1), h, minH });
           }
         }
-        return { buildings: out, water, pois };
+        return { buildings: out, water, pois, trees: toLocal(await treesP, this.proj) };
       })();
       p.catch(() => this.tiles.delete(key)); // bei Fehler später erneut versuchen
       this.tiles.set(key, p);
@@ -241,12 +266,18 @@ export class SunLayer {
       m.clearRect(0, 0, W, H);
       m.fillStyle = '#000';
       const P = this._affine(r, px);
+      // Im LoD2-Gebiet die OSM-Gebäude durch das 3D-Modell ersetzen
+      const lod = this.lod2;
+      const osm = lod ? near.filter((b) => { const [cx, cy] = centroid(b.outer[0]); return !lod.covers(cx, cy); }) : near;
       // Dächer: Außenring und Höfe gegenläufig, damit „nonzero“ die Höfe frei lässt
-      this._chunks(m, roofRings(near), P, 120);
+      this._chunks(m, roofRings(osm), P, 120);
+      if (lod) { this._chunks(m, lod.footprints(), P, 120); this._chunks(m, lod.shadowPolys(this.sun), P, 150, W, H); }
       // Schattenvierecke, alle gleich orientiert
-      this._chunks(m, shadowShapes(near, this.sun, MAX_SHADOW_M, { footprints: false }), P, 150, W, H);
+      this._chunks(m, shadowShapes(osm, this.sun, MAX_SHADOW_M, { footprints: false }), P, 150, W, H);
+      // Baumkronen (nur belaubt)
+      if (this._trees?.length && this.sun.date) this._chunks(m, treeShadows(this._trees, this.sun, this.sun.date), P, 150, W, H);
 
-      g.fillStyle = COLORS.sun;
+      g.fillStyle = this.cloudy ? COLORS.sunCloudy : COLORS.sun;
       g.fillRect(0, 0, W, H);
       g.globalCompositeOperation = 'destination-out';
       g.drawImage(mask, 0, 0);

@@ -91,6 +91,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .slider::-webkit-slider-thumb { -webkit-appearance: none; width: 26px; height: 26px; margin-top: -11px; border-radius: 50%; background: var(--bg); border: 1px solid #c9ccd1; }
 .slider::-moz-range-track { height: 4px; border-radius: 2px; background: var(--track, var(--separator)); }
 .slider::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: var(--bg); border: 1px solid #c9ccd1; }
+.ends .cloudy { color: var(--label); font-weight: 600; }
 .ends { display: flex; justify-content: space-between; font-size: 12px; font-variant-numeric: tabular-nums; }
 
 .sheet-content { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid var(--separator); padding-bottom: calc(16px + var(--sab)); }
@@ -109,6 +110,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .status-dot { flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--shade); }
 .status-dot.sun { background: var(--sun); }
 .status-dot.part { background: linear-gradient(90deg, var(--sun) 50%, var(--shade) 50%); }
+.status-dot.cloudsun { background: #fbe6c0; border: 2px solid var(--sun); }
 .status-dot.closed { background: var(--bg); border: 2px solid var(--tertiary); }
 .row-main { flex: 1; min-width: 0; }
 .row-title { display: block; font-size: 17px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -148,6 +150,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .kv li:last-child { border-bottom: 0; }
 .kv li.today { font-weight: 600; }
 .kv .v { text-align: right; font-variant-numeric: tabular-nums; }
+.source-note { color: var(--label); }
 .note { font-size: 13px; color: var(--secondary); margin: 6px 0 0; }
 
 /* Karte */

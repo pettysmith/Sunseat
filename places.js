@@ -1,6 +1,8 @@
 // Sunseat – Cafés und Bars: laden (Overpass, sonst Kartenkacheln), Öffnungszeiten,
 // Sonne am geschätzten Sitzplatz.
 import { ShadowIndex, terraceSamples } from './shadow.js';
+import { TreeIndex, inHamburg } from './trees.js';
+import { fetchLod2, Lod2Index } from './lod2.js';
 
 /* global opening_hours */
 
@@ -119,8 +121,8 @@ export class Places {
     for (const p of places) for (const k of this.sl.tilesAround(p.lat, p.lon)) keys.add(k);
     const key = [...keys].sort().join(',');
     if (this.index?.key !== key) {
-      const { buildings } = await this.sl.load([...keys]);
-      this.index = { key, index: new ShadowIndex(buildings) };
+      const { buildings, trees } = await this.sl.load([...keys]);
+      this.index = { key, index: new ShadowIndex(buildings), trees: new TreeIndex(trees) };
     }
     return this.index;
   }
@@ -151,7 +153,12 @@ export class Places {
     const s = suns[i];
     if (s.altDeg <= 0.5) { arr[i] = -1; return; }
     let lit = 0;
-    for (const p of c.samples) if (!this.index.index.isShaded(p.x, p.y, s.dx, s.dy, s.tanAlt, 1.2, p.ex)) lit++;
+    const { index, trees } = this.index;
+    for (const p of c.samples) {
+      if (index.isShaded(p.x, p.y, s.dx, s.dy, s.tanAlt, 1.2, p.ex)) continue;
+      if (s.date && trees.isShaded(p.x, p.y, s, s.date)) continue;
+      lit++;
+    }
     arr[i] = lit / c.samples.length;
   }
 
@@ -173,6 +180,51 @@ export class Places {
     }
     return { sun: arr, facadeDeg: c.facadeDeg, samples: c.samples };
   }
+}
+
+/**
+ * Genaue Berechnung für die Umgebung eines Ortes: 3D-Stadtmodell (±250 m) statt OSM-Gebäuden,
+ * außerhalb davon weiter OSM. Gibt null zurück, wenn der Ort nicht in Hamburg liegt.
+ */
+export async function preciseContext(places, place, signal) {
+  const dLat = 250 / 110540, dLon = 250 / (111320 * Math.cos((place.lat * Math.PI) / 180));
+  const b = { w: place.lon - dLon, e: place.lon + dLon, s: place.lat - dLat, n: place.lat + dLat };
+  if (!inHamburg(b)) return null;
+  const sl = places.sl;
+  const { buildings, trees } = await sl.load(sl.tilesAround(place.lat, place.lon));
+  const lodBuildings = await fetchLod2(b, sl.proj, signal);
+  if (!lodBuildings.length) return null;
+  const lod = new Lod2Index(lodBuildings);
+  const cen = (r) => r.reduce((a, p) => [a[0] + p[0] / r.length, a[1] + p[1] / r.length], [0, 0]);
+  const osm = new ShadowIndex(buildings.filter((bd) => { const [x, y] = cen(bd.outer[0]); return !lod.covers(x, y); }));
+  return { lod, osm, trees: new TreeIndex(trees), id: Math.random().toString(36).slice(2) };
+}
+
+/** Sonnenanteil je Zeitschritt mit dem genauen Kontext (gecacht am Ort). */
+export function preciseTimeline(places, place, ctx, dayKey, suns) {
+  const key = ctx.id + ':' + dayKey;
+  if (place._precise?.key === key) return place._precise.sun;
+  const [x0, y0] = places.sl.proj.toXY(place.lat, place.lon);
+  // Sitzpunkte wie gehabt (Fassade aus OSM), Schatten aus LoD2 + OSM außerhalb + Bäume
+  const t = terraceSamples(places.index?.index || ctx.osm, x0, y0);
+  const samples = t.samples.map(([x, y]) => {
+    const ex = ctx.osm.buildingsAt(x, y);
+    return { x, y, ex: ex.length ? new Set(ex) : null, lodEx: ctx.lod.buildingsAt(x, y) };
+  });
+  const sun = new Float32Array(suns.length);
+  suns.forEach((s, i) => {
+    if (s.altDeg <= 0.5) { sun[i] = -1; return; }
+    let lit = 0;
+    for (const p of samples) {
+      if (ctx.lod.isShaded(p.x, p.y, s, 1.2, p.lodEx)) continue;
+      if (ctx.osm.isShaded(p.x, p.y, s.dx, s.dy, s.tanAlt, 1.2, p.ex)) continue;
+      if (s.date && ctx.trees.isShaded(p.x, p.y, s, s.date)) continue;
+      lit++;
+    }
+    sun[i] = lit / samples.length;
+  });
+  place._precise = { key, sun };
+  return sun;
 }
 
 /** Öffnungsstatus je Zeitschritt: 1 offen, 0 geschlossen, 2 unbekannt. */

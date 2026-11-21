@@ -1,7 +1,7 @@
 // Sunseat – Sonnen-Karte mit Cafés und Bars
 import { SunLayer, MIN_ZOOM } from './sunlayer.js';
 import { sunVector, compass } from './shadow.js';
-import { Places, SUNNY, openTimeline, subLabel, weekHours } from './places.js';
+import { Places, SUNNY, openTimeline, subLabel, weekHours, preciseContext, preciseTimeline } from './places.js';
 
 /* global maplibregl, SunCalc */
 
@@ -75,8 +75,8 @@ function addPlaceLayers() {
     id: 'places', type: 'circle', source: 'places',
     paint: {
       'circle-radius': ['interpolate', ['linear'], ['zoom'], 13, ['case', ['get', 'selected'], 7, 4.5], 16, ['case', ['get', 'selected'], 9, 6.5]],
-      'circle-color': ['match', ['get', 'state'], 'sun', '#f5a524', 'part', '#f8c56a', 'closed', '#ffffff', '#8a8f99'],
-      'circle-stroke-color': ['case', ['get', 'selected'], '#111318', ['==', ['get', 'state'], 'closed'], '#8a8f99', '#ffffff'],
+      'circle-color': ['match', ['get', 'state'], 'sun', '#f5a524', 'part', '#f8c56a', 'cloudsun', '#fbe6c0', 'closed', '#ffffff', '#8a8f99'],
+      'circle-stroke-color': ['case', ['get', 'selected'], '#111318', ['==', ['get', 'state'], 'closed'], '#8a8f99', ['==', ['get', 'state'], 'cloudsun'], '#f5a524', '#ffffff'],
       'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 13, ['case', ['get', 'selected'], 2.5, 1.5], 16, ['case', ['get', 'selected'], 3, 2]],
     },
   });
@@ -127,7 +127,7 @@ function selectDay(offset, initial = false) {
   start.setMinutes(Math.ceil(start.getMinutes() / STEP) * STEP, 0, 0);
   state.steps = [];
   for (let t = start.getTime(); t <= times.sunset.getTime(); t += STEP * 60000) state.steps.push(new Date(t));
-  state.suns = state.steps.map((t) => sunVector(SunCalc.getPosition(t, c.lat, c.lng)));
+  state.suns = state.steps.map((t) => ({ ...sunVector(SunCalc.getPosition(t, c.lat, c.lng)), date: t }));
   state.dayKey = `${offset}:${c.lat.toFixed(2)},${c.lng.toFixed(2)}`;
   state.sunrise = times.sunrise; state.sunset = times.sunset;
   const target = offset === 0 && now >= state.steps[0] && now <= times.sunset ? now : times.solarNoon;
@@ -181,17 +181,41 @@ async function loadClouds() {
   const c = map.getCenter();
   state.cloudsAt = { lat: c.lat, lng: c.lng };
   try {
-    const u = `https://api.open-meteo.com/v1/forecast?latitude=${c.lat.toFixed(3)}&longitude=${c.lng.toFixed(3)}&hourly=cloud_cover&timezone=auto&forecast_days=7`;
+    const u = `https://api.open-meteo.com/v1/forecast?latitude=${c.lat.toFixed(3)}&longitude=${c.lng.toFixed(3)}&hourly=cloud_cover,sunshine_duration&timezone=auto&forecast_days=7`;
     const j = await (await fetch(u)).json();
-    state.clouds = new Map(j.hourly.time.map((t, i) => [t.slice(0, 13), j.hourly.cloud_cover[i]]));
+    state.clouds = new Map(j.hourly.time.map((t, i) => [t.slice(0, 13), {
+      cloud: j.hourly.cloud_cover?.[i],
+      sunMin: j.hourly.sunshine_duration?.[i] != null ? j.hourly.sunshine_duration[i] / 60 : null,
+    }]));
   } catch { state.clouds = null; }
-  if (state.steps.length) renderCloud(state.steps[state.idx]);
+  if (state.steps.length) { updateSun(); renderPlaces(); }
+}
+
+const hourKey = (d) => {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}`;
+};
+
+/** Wetter zur Zeit t. Sonnenscheindauer ist bei Open-Meteo die Summe der vorangehenden Stunde. */
+function weatherAt(t) {
+  if (!state.clouds) return null;
+  const cur = state.clouds.get(hourKey(t));
+  const next = new Date(t); next.setMinutes(0, 0, 0); next.setHours(next.getHours() + 1);
+  const sum = state.clouds.get(hourKey(next));
+  if (!cur && !sum) return null;
+  const cloud = cur?.cloud ?? sum?.cloud;
+  const sunMin = sum?.sunMin ?? cur?.sunMin;
+  // Bewölkt: weniger als 15 Minuten Sonnenschein in dieser Stunde (ersatzweise ab 85 % Bewölkung)
+  const cloudy = sunMin != null ? sunMin < 15 : cloud >= 85;
+  return { cloud, sunMin, cloudy };
 }
 
 function renderCloud(t) {
-  const p = (n) => String(n).padStart(2, '0');
-  const v = state.clouds?.get(`${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}T${p(t.getHours())}`);
-  $('cloud').textContent = v == null ? '' : `Bewölkung ${Math.round(v)} %`;
+  const w = weatherAt(t);
+  state.cloudy = !!w?.cloudy;
+  layer?.setCloudy(state.cloudy);
+  $('cloud').textContent = !w ? '' : w.cloudy ? `Bewölkt (${Math.round(w.cloud)} %)` : `Bewölkung ${Math.round(w.cloud)} %`;
+  $('cloud').classList.toggle('cloudy', state.cloudy);
 }
 
 function distKm(a, b) {
@@ -252,7 +276,15 @@ function visiblePlaces(limit = MAX_LIST) {
 /** Sonne und Öffnung eines Ortes für den gewählten Tag (gecacht). */
 function info(p) {
   if (!places?.index) return null;
-  const { sun, facadeDeg } = places.sunTimeline(p, state.dayKey, state.suns);
+  let { sun, facadeDeg } = places.sunTimeline(p, state.dayKey, state.suns);
+  // Im Gebiet des 3D-Stadtmodells genauer rechnen
+  const ctx = state.precise?.ctx;
+  let precise = false;
+  if (ctx) {
+    const [x, y] = layer.proj.toXY(p.lat, p.lon);
+    if (ctx.lod.covers(x, y, 60)) { sun = preciseTimeline(places, p, ctx, state.dayKey, state.suns); precise = true; }
+  }
+  if (precise) return { sun, open: openArr(p), facadeDeg, precise };
   return { sun, open: openArr(p), facadeDeg };
 }
 
@@ -336,7 +368,8 @@ function renderPlaces() {
   map.getSource('places')?.setData({
     type: 'FeatureCollection',
     features: rows.map(({ p, inf }, k) => {
-      const st = inf.open[i] === 0 ? 'closed' : sunState(inf.sun[i]);
+      let st = inf.open[i] === 0 ? 'closed' : sunState(inf.sun[i]);
+      if (state.cloudy && (st === 'sun' || st === 'part')) st = 'cloudsun';
       return { type: 'Feature', properties: { id: p.id, name: p.name, state: st, selected: p.id === state.selected, rank: k },
         geometry: { type: 'Point', coordinates: [p.lon, p.lat] } };
     }),
@@ -348,10 +381,10 @@ function renderPlaces() {
   const sunny = rows.filter(({ inf }) => inf.sun[i] >= SUNNY && inf.open[i] !== 0).length;
   if (overview) {
     $('listTitle').textContent = rows.length ? `${rows.length} ${rows.length === 1 ? 'Sonnenplatz' : 'Sonnenplätze'}` : 'Keine Sonnenplätze';
-    $('listMeta').textContent = 'im Ausschnitt';
+    $('listMeta').textContent = state.cloudy ? 'frei, aber bewölkt' : 'im Ausschnitt';
   } else {
     $('listTitle').textContent = !zoomOk ? 'Cafés und Bars' : rows.length ? `${rows.length} ${rows.length === 1 ? 'Ort' : 'Orte'}` : 'Keine Orte';
-    $('listMeta').textContent = zoomOk && rows.length ? `${sunny} in der Sonne` : '';
+    $('listMeta').textContent = zoomOk && rows.length ? (state.cloudy ? `${sunny} frei, aber bewölkt` : `${sunny} in der Sonne`) : '';
   }
   const ul = $('list');
   ul.replaceChildren();
@@ -361,6 +394,7 @@ function renderPlaces() {
     return;
   }
   if (overview) note('Gezeigt werden nur Orte in der Sonne. Näher heranzoomen für alle Orte und die Sonnenflächen.');
+  if (state.cloudy) note('Laut Vorhersage ist es zu dieser Zeit bedeckt. Die Plätze liegen frei, direkte Sonne ist aber unwahrscheinlich.');
   if (state.source === 'tiles') note(state.fullDone ? 'Öffnungszeiten gerade nicht abrufbar. Gezeigt werden Name, Lage und Sonne.' : 'Öffnungszeiten werden geladen …');
   if (state.filters.open && unknownHours) note(`${unknownHours} ${unknownHours === 1 ? 'Ort' : 'Orte'} ohne Öffnungszeiten ausgeblendet.`);
   if (!rows.length) { note('Mit diesen Filtern gibt es hier nichts. Filter lockern oder Karte verschieben.'); return; }
@@ -369,11 +403,13 @@ function renderPlaces() {
     const s = sunText(inf.sun, i), o = openText(p, t, inf.open[i]);
     const li = document.createElement('li');
     const closed = inf.open[i] === 0;
+    const cloudy = state.cloudy && (s.st === 'sun' || s.st === 'part');
+    if (cloudy) s.text = s.st === 'sun' ? 'Frei, aber bewölkt' : 'Halbschatten, bewölkt';
     li.innerHTML = `<button type="button" class="row">
-      <span class="status-dot ${closed ? 'closed' : s.st}" aria-hidden="true"></span>
+      <span class="status-dot ${closed ? 'closed' : cloudy ? 'cloudsun' : s.st}" aria-hidden="true"></span>
       <span class="row-main">
         <span class="row-title">${esc(p.name)}</span>
-        <span class="row-sub"><span class="${s.st === 'sun' && !closed ? 'is-sun' : ''}">${s.text}</span></span>
+        <span class="row-sub"><span class="${s.st === 'sun' && !closed && !cloudy ? 'is-sun' : ''}">${s.text}</span></span>
         ${o.text ? `<span class="row-sub"><span class="${o.cls}">${o.text}</span> · ${subLabel(p)}</span>` : `<span class="row-sub">${subLabel(p)}</span>`}
       </span>
     </button>`;
@@ -387,6 +423,7 @@ function renderPlaces() {
 function select(id) {
   state.selected = id;
   const p = state.places.find((x) => x.id === id);
+  if (p) loadPrecise(p);
   if (p) {
     const pad = window.innerWidth >= 760 ? 0 : Math.min(window.innerHeight * 0.55, sheetHeights().medium) / 2;
     map.easeTo({ center: [p.lon, p.lat], offset: [0, -pad], zoom: Math.max(map.getZoom(), 17), duration: 500 });
@@ -395,6 +432,30 @@ function select(id) {
   $('detailView').hidden = false;
   $('content').scrollTop = 0;
   if (state.detent === 'small') setDetent('medium');
+  renderPlaces();
+}
+
+/** 3D-Stadtmodell um den gewählten Ort laden (nur Hamburg). */
+async function loadPrecise(p) {
+  const ctx = state.precise?.ctx;
+  if (ctx) {
+    const [x, y] = layer.proj.toXY(p.lat, p.lon);
+    if (ctx.lod.covers(x, y, 60)) return; // schon geladen
+  }
+  state.preciseAbort?.abort();
+  const ac = new AbortController();
+  state.preciseAbort = ac;
+  state.preciseStatus = { id: p.id, status: 'loading' };
+  renderPlaces();
+  try {
+    const next = await preciseContext(places, p, ac.signal);
+    if (ac.signal.aborted) return;
+    state.preciseStatus = { id: p.id, status: next ? 'ok' : 'none' };
+    if (next) { state.precise = { ctx: next }; layer.setLod2(next.lod); }
+  } catch {
+    if (ac.signal.aborted) return;
+    state.preciseStatus = { id: p.id, status: 'error' };
+  }
   renderPlaces();
 }
 
@@ -444,9 +505,11 @@ function renderDetail() {
 
     <section class="group">
       <h3>Sonne ${dayName}</h3>
-      <div class="status-line ${s.st === 'sun' ? 'is-sun' : ''}">${s.text}</div>
+      <div class="status-line ${s.st === 'sun' && !state.cloudy ? 'is-sun' : ''}">${s.text}</div>
+      ${state.cloudy && (s.st === 'sun' || s.st === 'part') ? '<p class="note">Der Platz liegt frei, laut Vorhersage ist es aber bedeckt.</p>' : ''}
       <div class="dayline" aria-hidden="true">${segs}<i class="now" style="left:${(i / n) * 100}%"></i></div>
       <div class="dayline-scale"><span>${hhmm(state.sunrise)}</span><span>${hhmm(state.sunset)}</span></div>
+      <p class="note source-note">${preciseNote(p, inf)}</p>
       <p class="note">${total ? `Insgesamt ${total >= 60 ? Math.floor(total / 60) + ' h ' : ''}${total % 60 ? (total % 60) + ' min' : ''} Sonne am Sitzplatz.` : 'Der Sitzplatz bekommt an diesem Tag keine Sonne.'}
       ${inf.facadeDeg != null ? ` Tische vermutlich auf der ${SIDE[Math.round(inf.facadeDeg / 45) % 8]}seite.` : ''}</p>
     </section>
@@ -467,6 +530,14 @@ function renderDetail() {
       ${p.osm ? `<p class="note"><a href="https://www.openstreetmap.org/edit?${p.osm.replace('/', '=')}" target="_blank" rel="noopener">Angaben in OpenStreetMap ergänzen</a></p>` : ''}
     </section>`;
   $('back').onclick = deselect;
+}
+
+function preciseNote(p, inf) {
+  if (inf.precise) return 'Genau berechnet mit dem 3D-Stadtmodell Hamburg (Dachformen) und dem Straßenbaumkataster.';
+  const st = state.preciseStatus;
+  if (st?.id === p.id && st.status === 'loading') return 'Lade 3D-Stadtmodell für eine genauere Berechnung …';
+  if (st?.id === p.id && st.status === 'error') return '3D-Stadtmodell gerade nicht erreichbar. Gebäudehöhen aus OpenStreetMap.';
+  return 'Gebäudehöhen aus OpenStreetMap.';
 }
 
 /* ================= Panel ================= */

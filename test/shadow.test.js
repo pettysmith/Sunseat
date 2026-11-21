@@ -71,3 +71,40 @@ test('Innenhof bleibt frei und bekommt Schatten von den Hofwänden', async () =>
   const ys = shapes.flat().map((p) => p[1]);
   assert.ok(ys.some((y) => Math.abs(y - 25) < 1e-9));
 });
+
+test('Baumkrone beschattet nur belaubt und nur in Sonnenrichtung', async () => {
+  const { TreeIndex, leafOn } = await import('../trees.js');
+  // Baum 6 m südlich, Krone r=4 m, Mittelpunkt 8 m hoch
+  const tree = { x: 0, y: -6, r: 4, zc: 8, h: 12, evergreen: false };
+  const idx = new TreeIndex([tree]);
+  const sun = sunAt(180, 45);       // Strahl von (0,0,1.2) nach Süden: bei 6 m Abstand Höhe 7.2 m → trifft die Krone
+  const juni = new Date('2027-06-21T12:00:00'), jan = new Date('2027-01-15T12:00:00');
+  assert.equal(leafOn(tree, juni), true);
+  assert.equal(leafOn(tree, jan), false);
+  assert.equal(idx.isShaded(0, 0, sun, juni), true);
+  assert.equal(idx.isShaded(0, 0, sun, jan), false);
+  assert.equal(idx.isShaded(0, 0, sunAt(0, 45), juni), false);   // Sonne aus Norden
+  assert.equal(idx.isShaded(0, 0, sunAt(180, 80), juni), false);  // Sonne fast senkrecht: Strahl geht über die Krone
+});
+
+test('UTM-Umrechnung und LoD2-Schatten eines Giebeldachs', async () => {
+  const { utmToLatLon, Lod2Index } = await import('../lod2.js');
+  // Referenzwerte aus pyproj (EPSG:25832 -> 4326)
+  const [lat, lon] = utmToLatLon(563797, 5935006);
+  assert.ok(Math.abs(lat - 53.5600517) < 1e-6 && Math.abs(lon - 9.9631506) < 1e-6);
+  // Haus 10 x 10 m, 6 m Traufe (y=0 und y=10), First 12 m bei y=5, 20 m südlich des Punktes
+  const y0 = -30, y1 = -20, z0 = 0;
+  const v = (x, y, z) => [x, y, z];
+  const faces = [
+    [v(-5, y0, 0), v(5, y0, 0), v(5, y0, 6), v(-5, y0, 6)],          // Südwand
+    [v(-5, y1, 0), v(5, y1, 0), v(5, y1, 6), v(-5, y1, 6)],          // Nordwand
+    [v(-5, y0, 6), v(5, y0, 6), v(5, -25, 12), v(-5, -25, 12)],      // Dach Süd
+    [v(-5, y1, 6), v(5, y1, 6), v(5, -25, 12), v(-5, -25, 12)],      // Dach Nord
+  ];
+  const b = { id: 'h', faces, footprint: [[[-5, y0], [5, y0], [5, y1], [-5, y1]]], z0, zMax: 12, bbox: [-5, y0, 5, y1] };
+  const idx = new Lod2Index([b]);
+  const sun = (alt) => ({ dx: 0, dy: -1, tanAlt: Math.tan((alt * Math.PI) / 180), altDeg: alt });
+  // Strahl nach Süden aus 1,2 m Höhe: bei 20 m Abstand (Nordwand) Höhe 1,2 + 20·tan
+  assert.equal(idx.isShaded(0, 0, sun(10)), true);   // 4,7 m an der Nordwand, 6,0 m am First-Abstand 25 m < 12 m
+  assert.equal(idx.isShaded(0, 0, sun(30)), false);  // 12,7 m an der Nordwand, 15,6 m am First > 12 m
+});
