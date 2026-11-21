@@ -12,7 +12,8 @@ Sonnen-Karte für Hamburg (und überall sonst): Wo fällt gerade Sonne auf den B
 
 ## Cafés und Bars
 
-- Ab Zoomstufe 15 erscheinen Cafés, Bars, Kneipen und Biergärten als Punkte: orange in der Sonne, halb orange im Halbschatten, grau im Schatten, hohl bei geschlossen.
+- Weiter herausgezoomt (Zoomstufe 13 bis 15) zeigt die Karte nur die Orte, die gerade Sonne haben. Die Liste heißt dann „N Sonnenplätze im Ausschnitt“.
+- Ab Zoomstufe 15 erscheinen alle Cafés, Bars, Kneipen und Biergärten als Punkte: orange in der Sonne, halb orange im Halbschatten, grau im Schatten, hohl bei geschlossen.
 - Die Sonne wird am geschätzten Sitzplatz berechnet: 3 m vor der nächsten Fassade, an drei Punkten nebeneinander.
 - Die Liste im Panel ist sortiert nach Sonne jetzt, Sonne später, Schatten und geschlossen. Zu jedem Ort steht dort „Sonne bis …“ oder „Sonne ab …“ und „Geöffnet bis …“ oder „Geschlossen · öffnet …“.
 - Filter: Geöffnet (zur gewählten Uhrzeit, Orte ohne Angaben werden ausgeblendet und gezählt), In der Sonne, Cafés, Bars, Außenplätze
@@ -23,7 +24,7 @@ Sonnen-Karte für Hamburg (und überall sonst): Wo fällt gerade Sonne auf den B
 
 1. Gebäudeumrisse mit Höhen (`render_height`, aus OSM `height` bzw. `building:levels`) kommen aus den Vektorkacheln von OpenFreeMap (Zoomstufe 14). Geladen wird der sichtbare Ausschnitt plus 450 m Rand, damit auch Schatten von außerhalb ankommen.
 2. Für den Sonnenstand (SunCalc) wirft jede Wand ein Schattenviereck vom Fuß bis zur Länge Höhe ÷ tan(Sonnenhöhe). Auch Wände zu Innenhöfen werfen Schatten.
-3. Alle Schatten und Dächer zusammen werden auf ein Canvas gezeichnet, und zwar unter den Straßennamen. Alles andere an Land bekommt die Sonnenfarbe.
+3. Schatten und Dächer werden portionsweise in eine Maske gezeichnet und dann unter den Straßennamen auf die Karte gelegt. Ein einziger Riesenpfad wäre bei Zoom 14 minutenlang beim Füllen. Alles andere an Land bekommt die Sonnenfarbe.
 
 Aufbau: `shadow.js` (Geometrie), `sunlayer.js` (Kacheln laden, Sonne zeichnen), `places.js` (Cafés und Bars, Öffnungszeiten, Sonne am Sitzplatz), `app.js` (Karte und Bedienung). Tests: `npm test`.
 
@@ -36,6 +37,10 @@ Aufbau: `shadow.js` (Geometrie), `sunlayer.js` (Kacheln laden, Sonne zeichnen), 
 ## Veröffentlichen
 
 Settings → Pages → „Deploy from a branch“ → Branch und Ordner `/ (root)`. In Safari öffnen, dann Teilen → „Zum Home-Bildschirm“. Lokal: `python3 -m http.server`.
+
+## Icon
+
+`icons/icon.svg`: eine Sonnenscheibe, schräg geteilt in Sonne (#f5a524) und Schatten (#8a8f99). Die PNGs (180, 192, 512, maskierbar 512, Favicon 32) sind daraus gerendert.
 
 ## Quellen und Lizenzen
 

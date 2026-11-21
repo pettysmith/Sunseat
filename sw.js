@@ -1,9 +1,9 @@
 // Sunseat Service Worker: App-Dateien offline vorhalten, alles andere aus dem Netz.
-const VERSION = 'sunseat-v5';
+const VERSION = 'sunseat-v6';
 const SHELL = [
   './', 'index.html', 'style.css', 'app.js', 'shadow.js', 'sunlayer.js', 'places.js', 'manifest.webmanifest',
   'vendor/suncalc.js', 'vendor/opening_hours.js', 'vendor/maplibre-gl.js', 'vendor/maplibre-gl.css', 'vendor/vector-tile.js',
-  'icons/icon.svg', 'icons/icon-192.png', 'icons/apple-touch-icon.png',
+  'icons/icon.svg', 'icons/icon-192.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png',
 ];
 
 self.addEventListener('install', (e) => {

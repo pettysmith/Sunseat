@@ -12,7 +12,8 @@ const OVERSCAN = 0.25;        // Rand um den sichtbaren Ausschnitt (je Seite)
 
 const COLORS = {
   sun: 'rgba(255, 166, 20, 0.40)',
-  dim: 'rgba(22, 27, 38, 0.17)',
+  dimSolid: 'rgb(22, 27, 38)',
+  dimAlpha: 0.17,
   night: 'rgba(22, 27, 38, 0.30)',
 };
 
@@ -230,19 +231,36 @@ export class SunLayer {
         for (const [x, y] of ring) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
         return maxX > ax - pad && minX < bx + pad && maxY > ay - pad && minY < by + pad;
       });
-      // Schatten und Dächer zusammen als ein Pfad: alles darin ist „keine Sonne am Boden“
-      const shapes = shadowShapes(near, this.sun, MAX_SHADOW_M, { footprints: false }).concat(roofRings(near));
+      // Alles, was keine Sonne am Boden hat (Schatten + Dächer), in eine Maske zeichnen.
+      // In kleinen Portionen gefüllt: ein einziger Riesenpfad mit zehntausenden
+      // überlappenden Flächen ist beim Füllen extrem langsam.
+      const mask = (this.mask ||= document.createElement('canvas'));
+      if (mask.width !== W || mask.height !== H) { mask.width = W; mask.height = H; }
+      const m = mask.getContext('2d');
+      m.globalCompositeOperation = 'source-over';
+      m.clearRect(0, 0, W, H);
+      m.fillStyle = '#000';
+      const P = this._affine(r, px);
+      // Dächer: Außenring und Höfe gegenläufig, damit „nonzero“ die Höfe frei lässt
+      this._chunks(m, roofRings(near), P, 120);
+      // Schattenvierecke, alle gleich orientiert
+      this._chunks(m, shadowShapes(near, this.sun, MAX_SHADOW_M, { footprints: false }), P, 150, W, H);
+
       g.fillStyle = COLORS.sun;
       g.fillRect(0, 0, W, H);
       g.globalCompositeOperation = 'destination-out';
-      g.fillStyle = '#000';
-      this._fill(g, shapes, px);
+      g.drawImage(mask, 0, 0);
+      m.globalCompositeOperation = 'source-in';
+      m.fillStyle = COLORS.dimSolid;
+      m.fillRect(0, 0, W, H);
       g.globalCompositeOperation = 'source-over';
-      g.fillStyle = COLORS.dim;
-      this._fill(g, shapes, px);
+      g.globalAlpha = COLORS.dimAlpha;
+      g.drawImage(mask, 0, 0);
+      g.globalAlpha = 1;
+      // Wasser neutral lassen
       g.globalCompositeOperation = 'destination-out';
       g.fillStyle = '#000';
-      this._fill(g, roofRings(water), px);
+      this._chunks(g, roofRings(water), P, 120);
       g.globalCompositeOperation = 'source-over';
     }
     const src = this.map.getSource('sunlayer');
@@ -251,15 +269,32 @@ export class SunLayer {
     this.map.once('render', () => src.pause());
   }
 
-  _fill(g, polys, px) {
+  /** Lokale Meter -> Canvas-Pixel als affine Näherung (genau genug über wenige Kilometer). */
+  _affine(r, px) {
+    const [cx, cy] = this.proj.toXY(y2lat((r.y0 + r.y1) / 2), x2lon((r.x0 + r.x1) / 2));
+    const o = px([cx, cy]), ex = px([cx + 1000, cy]), ey = px([cx, cy + 1000]);
+    const ax = (ex[0] - o[0]) / 1000, ay = (ex[1] - o[1]) / 1000, bx = (ey[0] - o[0]) / 1000, by = (ey[1] - o[1]) / 1000;
+    return (x, y) => [o[0] + (x - cx) * ax + (y - cy) * bx, o[1] + (x - cx) * ay + (y - cy) * by];
+  }
+
+  /** Polygone in Portionen füllen (nonzero); Polygone ganz außerhalb von W×H werden übersprungen. */
+  _chunks(g, polys, P, size, W = Infinity, H = Infinity) {
+    let n = 0;
     g.beginPath();
     for (const poly of polys) {
       if (poly.length < 3) continue;
-      const [x0, y0] = px(poly[0]);
-      g.moveTo(x0, y0);
-      for (let i = 1; i < poly.length; i++) { const [x, y] = px(poly[i]); g.lineTo(x, y); }
+      const pts = poly.map(([x, y]) => P(x, y));
+      if (W !== Infinity) {
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const [x, y] of pts) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+        if (maxX < 0 || maxY < 0 || minX > W || minY > H) continue;
+      }
+      g.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
       g.closePath();
+      if (++n % size === 0) { g.fill('nonzero'); g.beginPath(); }
     }
     g.fill('nonzero');
   }
+
 }

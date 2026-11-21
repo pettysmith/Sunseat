@@ -9,8 +9,10 @@ const STYLE = 'https://tiles.openfreemap.org/styles/positron';
 const TILES = 'https://tiles.openfreemap.org/planet';
 const START = { lng: 9.9662, lat: 53.5636, zoom: 16.4 }; // Sternschanze
 const STEP = 5;              // Minuten
-const PLACES_ZOOM = 15;      // ab hier Cafés und Bars
+const PLACES_ZOOM = 15;      // ab hier alle Cafés und Bars
+const OVERVIEW_ZOOM = 13;    // ab hier die Orte in der Sonne
 const MAX_LIST = 120;
+const MAX_TILES = 40;        // mehr Kacheln (sehr großer Bildschirm, weit herausgezoomt) werden nicht geladen
 
 const $ = (id) => document.getElementById(id);
 const fmtTime = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' });
@@ -72,10 +74,10 @@ function addPlaceLayers() {
   map.addLayer({
     id: 'places', type: 'circle', source: 'places',
     paint: {
-      'circle-radius': ['case', ['get', 'selected'], 9, 6.5],
+      'circle-radius': ['interpolate', ['linear'], ['zoom'], 13, ['case', ['get', 'selected'], 7, 4.5], 16, ['case', ['get', 'selected'], 9, 6.5]],
       'circle-color': ['match', ['get', 'state'], 'sun', '#f5a524', 'part', '#f8c56a', 'closed', '#ffffff', '#8a8f99'],
       'circle-stroke-color': ['case', ['get', 'selected'], '#111318', ['==', ['get', 'state'], 'closed'], '#8a8f99', '#ffffff'],
-      'circle-stroke-width': ['case', ['get', 'selected'], 3, 2],
+      'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 13, ['case', ['get', 'selected'], 2.5, 1.5], 16, ['case', ['get', 'selected'], 3, 2]],
     },
   });
   map.addLayer({
@@ -93,7 +95,7 @@ function addPlaceLayers() {
 }
 
 function onStatus(s) {
-  if (s === 'zoom') notice('Näher heranzoomen, um die Sonne zu sehen');
+  if (s === 'zoom') notice(map.getZoom() >= OVERVIEW_ZOOM ? '' : 'Näher heranzoomen, um die Sonne zu sehen');
   else if (s === 'loading') notice('Lade Gebäude …');
   else if (s === 'error') notice('Gebäudedaten nicht erreichbar');
   else notice('');
@@ -203,12 +205,13 @@ let placesRun = 0;
 async function refreshPlaces() {
   if (!places) return;
   const run = ++placesRun;
-  if (map.getZoom() < PLACES_ZOOM) {
+  const keys = map.getZoom() >= OVERVIEW_ZOOM ? layer.visibleTiles() : [];
+  if (!keys.length || keys.length > MAX_TILES) {
     state.places = [];
+    state.placesKey = '';
     renderPlaces();
     return;
   }
-  const keys = layer.visibleTiles();
   const key = keys.join(',');
   if (key !== state.placesKey) {
     state.placesKey = key;
@@ -223,26 +226,26 @@ async function refreshPlaces() {
       if (state.placesKey !== key) return;
       state.fullDone = true;
       if (list) { state.places = list; state.source = 'osm'; state.haveOsm = true; }
-      try { await places.prepare(visiblePlaces()); } catch { /* egal */ }
+      try { await places.prepare(visiblePlaces(Infinity)); } catch { /* egal */ }
       if (state.placesKey === key) renderPlaces();
     });
   }
   await state.fastP;
   if (run !== placesRun) return;
-  const inView = visiblePlaces();
-  try { await places.prepare(inView); } catch { return; }
+  $('listMeta').textContent = 'Berechne …';
+  try { await places.prepare(visiblePlaces(Infinity)); } catch { return; }
   if (run !== placesRun) return;
   renderPlaces();
 }
 
-function visiblePlaces() {
+function visiblePlaces(limit = MAX_LIST) {
   const b = map.getBounds();
   const c = map.getCenter();
   return state.places
     .filter((p) => b.contains([p.lon, p.lat]) || p.id === state.selected)
     .map((p) => ({ p, d: distKm(c, { lat: p.lat, lng: p.lon }) }))
     .sort((a, b2) => a.d - b2.d)
-    .slice(0, MAX_LIST)
+    .slice(0, limit)
     .map((x) => x.p);
 }
 
@@ -250,9 +253,13 @@ function visiblePlaces() {
 function info(p) {
   if (!places?.index) return null;
   const { sun, facadeDeg } = places.sunTimeline(p, state.dayKey, state.suns);
+  return { sun, open: openArr(p), facadeDeg };
+}
+
+function openArr(p) {
   p._open ??= new Map();
   if (!p._open.has(state.dayKey)) p._open.set(state.dayKey, openTimeline(p, state.steps));
-  return { sun, open: p._open.get(state.dayKey), facadeDeg };
+  return p._open.get(state.dayKey);
 }
 
 function sunState(v) { return v < 0 ? 'night' : v >= SUNNY ? 'sun' : v > 0 ? 'part' : 'shade'; }
@@ -296,12 +303,19 @@ function passes(p, inf, i) {
 function renderPlaces() {
   if (!state.steps.length) return;
   const i = state.idx, t = state.steps[i];
-  const zoomOk = map.getZoom() >= PLACES_ZOOM;
-  const inView = zoomOk ? visiblePlaces() : [];
+  const zoom = map.getZoom();
+  const zoomOk = zoom >= PLACES_ZOOM;
+  const overview = !zoomOk && zoom >= OVERVIEW_ZOOM && state.places.length > 0;
+  let inView = zoomOk ? visiblePlaces() : [];
+  if (overview && places?.index) {
+    // Weit herausgezoomt: nur Orte, die gerade Sonne haben (günstig: nur dieser Zeitpunkt)
+    inView = visiblePlaces(Infinity).filter((p) => places.sunAt(p, state.dayKey, state.suns, i) >= SUNNY && openArr(p)[i] !== 0);
+  }
   const rows = [];
   let unknownHours = 0;
-  for (const p of inView) {
-    const inf = info(p);
+  for (const [k, p] of inView.entries()) {
+    // Volle Tageskurve nur für die Liste; für weitere Punkte reicht der aktuelle Zeitpunkt
+    const inf = k < MAX_LIST || zoomOk ? info(p) : { sun: Object.assign([], { [i]: places.sunAt(p, state.dayKey, state.suns, i) }), open: openArr(p), lite: true };
     if (!inf) continue;
     if (state.filters.open && inf.open[i] === 2) unknownHours++;
     if (!passes(p, inf, i) && p.id !== state.selected) continue;
@@ -332,16 +346,26 @@ function renderPlaces() {
 
   // Liste
   const sunny = rows.filter(({ inf }) => inf.sun[i] >= SUNNY && inf.open[i] !== 0).length;
-  $('listTitle').textContent = !zoomOk ? 'Cafés und Bars' : rows.length ? `${rows.length} ${rows.length === 1 ? 'Ort' : 'Orte'}` : 'Keine Orte';
-  $('listMeta').textContent = zoomOk && rows.length ? `${sunny} in der Sonne` : '';
+  if (overview) {
+    $('listTitle').textContent = rows.length ? `${rows.length} ${rows.length === 1 ? 'Sonnenplatz' : 'Sonnenplätze'}` : 'Keine Sonnenplätze';
+    $('listMeta').textContent = 'im Ausschnitt';
+  } else {
+    $('listTitle').textContent = !zoomOk ? 'Cafés und Bars' : rows.length ? `${rows.length} ${rows.length === 1 ? 'Ort' : 'Orte'}` : 'Keine Orte';
+    $('listMeta').textContent = zoomOk && rows.length ? `${sunny} in der Sonne` : '';
+  }
   const ul = $('list');
   ul.replaceChildren();
   const note = (text) => { const li = document.createElement('li'); li.className = 'empty'; li.textContent = text; ul.append(li); };
-  if (!zoomOk) { note('Näher heranzoomen, um Cafés und Bars zu sehen.'); return; }
+  if (!zoomOk && !overview) {
+    note(zoom < OVERVIEW_ZOOM || state.placesKey === '' ? 'Näher heranzoomen, um Sonnenplätze zu sehen.' : 'Lade …');
+    return;
+  }
+  if (overview) note('Gezeigt werden nur Orte in der Sonne. Näher heranzoomen für alle Orte und die Sonnenflächen.');
   if (state.source === 'tiles') note(state.fullDone ? 'Öffnungszeiten gerade nicht abrufbar. Gezeigt werden Name, Lage und Sonne.' : 'Öffnungszeiten werden geladen …');
   if (state.filters.open && unknownHours) note(`${unknownHours} ${unknownHours === 1 ? 'Ort' : 'Orte'} ohne Öffnungszeiten ausgeblendet.`);
   if (!rows.length) { note('Mit diesen Filtern gibt es hier nichts. Filter lockern oder Karte verschieben.'); return; }
   for (const { p, inf } of rows) {
+    if (inf.lite) continue;
     const s = sunText(inf.sun, i), o = openText(p, t, inf.open[i]);
     const li = document.createElement('li');
     const closed = inf.open[i] === 0;

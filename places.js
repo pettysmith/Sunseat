@@ -44,6 +44,18 @@ function parseHours(value, lat, lon) {
   }
 }
 
+function toPlace(el) {
+  const t = el.tags || {};
+  const lat = el.lat ?? el.center?.lat, lon = el.lon ?? el.center?.lon;
+  if (lat == null) return null;
+  const sub = t.amenity;
+  return {
+    id: el.type[0] + el.id, osm: `${el.type}/${el.id}`, name: t.name, kind: sub === 'cafe' ? 'cafe' : 'bar', sub,
+    lat, lon, tags: t, oh: parseHours(t.opening_hours, lat, lon),
+    seating: t.outdoor_seating == null ? null : t.outdoor_seating !== 'no', source: 'osm',
+  };
+}
+
 function dedupe(list) {
   const seen = new Set();
   return list.filter((p) => !seen.has(p.id) && seen.add(p.id));
@@ -65,7 +77,8 @@ export class Places {
    */
   inTiles(keys) {
     const fast = Promise.all(keys.map((k) => this._fast(k))).then((r) => dedupe(r.flat()));
-    const full = Promise.all(keys.map((k) => this._full(k))).then((r) => (r.every(Boolean) ? dedupe(r.flat()) : null));
+    this._fetchMissing(keys);
+    const full = Promise.all(keys.map((k) => this.tiles.get(k))).then((r) => (r.every(Boolean) ? dedupe(r.flat()) : null));
     return { fast, full };
   }
 
@@ -78,25 +91,26 @@ export class Places {
     return this.fastTiles.get(key);
   }
 
-  _full(key) {
-    if (!this.tiles.has(key)) {
-      const b = tileBBox(key);
-      const p = overpass(`[out:json][timeout:25];nwr["amenity"~"^(cafe|bar|pub|biergarten)$"]["name"](${b.s},${b.w},${b.n},${b.e});out center tags;`)
-        .then((j) => j.elements.map((el) => {
-          const t = el.tags || {};
-          const lat = el.lat ?? el.center?.lat, lon = el.lon ?? el.center?.lon;
-          if (lat == null) return null;
-          const sub = t.amenity;
-          return {
-            id: el.type[0] + el.id, osm: `${el.type}/${el.id}`, name: t.name, kind: sub === 'cafe' ? 'cafe' : 'bar', sub,
-            lat, lon, tags: t, oh: parseHours(t.opening_hours, lat, lon),
-            seating: t.outdoor_seating == null ? null : t.outdoor_seating !== 'no', source: 'osm',
-          };
-        }).filter(Boolean))
-        .catch(() => { setTimeout(() => this.tiles.delete(key), 60000); return null; }); // später erneut versuchen
-      this.tiles.set(key, p);
+  /** Alle noch fehlenden Kacheln in einer Overpass-Abfrage holen (Overpass erlaubt nur wenige parallele Abfragen). */
+  _fetchMissing(keys) {
+    const missing = keys.filter((k) => !this.tiles.has(k));
+    if (!missing.length) return;
+    let s = 90, w = 180, n = -90, e = -180;
+    for (const k of missing) {
+      const b = tileBBox(k);
+      s = Math.min(s, b.s); w = Math.min(w, b.w); n = Math.max(n, b.n); e = Math.max(e, b.e);
     }
-    return this.tiles.get(key);
+    const all = overpass(`[out:json][timeout:40];nwr["amenity"~"^(cafe|bar|pub|biergarten)$"]["name"](${s},${w},${n},${e});out center tags;`)
+      .then((j) => j.elements.map(toPlace).filter(Boolean))
+      .catch(() => null);
+    for (const k of missing) {
+      const b = tileBBox(k);
+      const p = all.then((list) => {
+        if (!list) { setTimeout(() => this.tiles.delete(k), 60000); return null; } // später erneut versuchen
+        return list.filter((x) => x.lat >= b.s && x.lat < b.n && x.lon >= b.w && x.lon < b.e);
+      });
+      this.tiles.set(k, p);
+    }
   }
 
   /** Schatten-Index für alle Gebäude um die Orte herum. */
@@ -111,8 +125,7 @@ export class Places {
     return this.index;
   }
 
-  /** Sonnenanteil (0..1, -1 = Nacht) je Zeitschritt; dayKey identifiziert Tag und Ort der Schritte. */
-  sunTimeline(place, dayKey, suns) {
+  _entry(place) {
     const { key: indexKey, index } = this.index;
     let c = this.cache.get(place.id);
     if (!c || c.indexKey !== indexKey) {
@@ -125,17 +138,40 @@ export class Places {
       c = { indexKey, samples, facadeDeg: t.facadeDeg, days: new Map() };
       this.cache.set(place.id, c);
     }
-    if (!c.days.has(dayKey)) {
-      const arr = new Float32Array(suns.length);
-      suns.forEach((s, i) => {
-        if (s.altDeg <= 0.5) { arr[i] = -1; return; }
-        let lit = 0;
-        for (const p of c.samples) if (!index.isShaded(p.x, p.y, s.dx, s.dy, s.tanAlt, 1.2, p.ex)) lit++;
-        arr[i] = lit / c.samples.length;
-      });
-      c.days.set(dayKey, arr);
+    return c;
+  }
+
+  _day(c, dayKey, n) {
+    let arr = c.days.get(dayKey);
+    if (!arr) { arr = new Float32Array(n).fill(NaN); c.days.set(dayKey, arr); }
+    return arr;
+  }
+
+  _compute(c, arr, suns, i) {
+    const s = suns[i];
+    if (s.altDeg <= 0.5) { arr[i] = -1; return; }
+    let lit = 0;
+    for (const p of c.samples) if (!this.index.index.isShaded(p.x, p.y, s.dx, s.dy, s.tanAlt, 1.2, p.ex)) lit++;
+    arr[i] = lit / c.samples.length;
+  }
+
+  /** Sonnenanteil (0..1, -1 = Nacht) zu einem einzelnen Zeitschritt – günstig für viele Orte. */
+  sunAt(place, dayKey, suns, i) {
+    const c = this._entry(place);
+    const arr = this._day(c, dayKey, suns.length);
+    if (Number.isNaN(arr[i])) this._compute(c, arr, suns, i);
+    return arr[i];
+  }
+
+  /** Sonnenanteil für alle Zeitschritte des Tages; dayKey identifiziert Tag und Ort der Schritte. */
+  sunTimeline(place, dayKey, suns) {
+    const c = this._entry(place);
+    const arr = this._day(c, dayKey, suns.length);
+    if (!c.full?.has(dayKey)) {
+      for (let i = 0; i < suns.length; i++) if (Number.isNaN(arr[i])) this._compute(c, arr, suns, i);
+      (c.full ??= new Set()).add(dayKey);
     }
-    return { sun: c.days.get(dayKey), facadeDeg: c.facadeDeg, samples: c.samples };
+    return { sun: arr, facadeDeg: c.facadeDeg, samples: c.samples };
   }
 }
 
