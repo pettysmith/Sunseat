@@ -108,3 +108,28 @@ test('UTM-Umrechnung und LoD2-Schatten eines Giebeldachs', async () => {
   assert.equal(idx.isShaded(0, 0, sun(10)), true);   // 4,7 m an der Nordwand, 6,0 m am First-Abstand 25 m < 12 m
   assert.equal(idx.isShaded(0, 0, sun(30)), false);  // 12,7 m an der Nordwand, 15,6 m am First > 12 m
 });
+
+test('Horizontprofil: Gebäude im Süden, frei im Norden', async () => {
+  const idx = new ShadowIndex([box(-20, -30, 20, -10, 20)]); // 20 m hoch, 10 m entfernt
+  const south = idx.horizonTan(0, 0, 0, -1);
+  assert.ok(Math.abs(Math.atan(south) * 180 / Math.PI - Math.atan(18.8 / 10) * 180 / Math.PI) < 0.01);
+  assert.equal(idx.horizonTan(0, 0, 0, 1), 0);
+  // Konsistenz mit dem Strahltest
+  const s30 = sunAt(180, 30), s70 = sunAt(180, 70);
+  assert.equal(idx.isShaded(0, 0, s30.dx, s30.dy, s30.tanAlt), s30.tanAlt < south);
+  assert.equal(idx.isShaded(0, 0, s70.dx, s70.dy, s70.tanAlt), s70.tanAlt < south);
+});
+
+test('Profil-Auswertung: Sonne nur über dem Horizont und außerhalb des Baumbands', async () => {
+  const { sunFraction } = await import('../profiles.js');
+  const bins = 36, bytes = new Uint8Array(bins * 3);
+  bytes.fill(30, 0, bins);              // Gebäudehorizont überall 30°
+  bytes[bins + 18] = 40; bytes[2 * bins + 18] = 50; // Baum im Süden (180–190°) zwischen 40° und 50°
+  const pl = { n: 1, bytes };
+  const sun = (alt, az, month = 6) => ({ altDeg: alt, bearingDeg: az, date: new Date(2027, month, 1, 12) });
+  assert.equal(sunFraction(pl, sun(20, 100), bins), 0);   // unter dem Gebäudehorizont
+  assert.equal(sunFraction(pl, sun(35, 100), bins), 1);   // darüber
+  assert.equal(sunFraction(pl, sun(45, 185), bins), 0);   // im Baumband (Sommer)
+  assert.equal(sunFraction(pl, sun(45, 185, 0), bins), 1); // Winter: kein Laub
+  assert.equal(sunFraction(pl, sun(-1, 185), bins), -1);  // Nacht
+});

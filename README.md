@@ -10,6 +10,22 @@ Sonnen-Karte für Hamburg (und überall sonst): Wo fällt gerade Sonne auf den B
 - Zeitregler von Sonnenaufgang bis -untergang in 5-Minuten-Schritten, dazu Tage für die nächste Woche, Sonnenhöhe und -richtung und die Bewölkung als Vorhersage
 - Die Kartenposition steht im Link (`#zoom/lat/lon`) und lässt sich teilen.
 
+## Weit herausgezoomt: vorab berechnete Horizontprofile
+
+Für das Gebiet Bahrenfeld bis Hamm und Wilhelmsburg-Nord bis Barmbek-Nord (1557 Cafés und Bars) liegt in `data/horizons.json` ein **Horizontprofil** pro Ort.
+
+- **Inhalt:** Für jeden der drei geschätzten Sitzpunkte steht dort in 36 Richtungen (alle 10°), bis zu welcher Höhe Gebäude den Himmel verdecken. Dazu kommt das Höhenband der Baumkronen.
+- **Auswertung in der App:** Ob Sonne ist, ist dann nur noch ein Vergleich „Sonnenhöhe > Horizont in Sonnenrichtung“, für jeden Zeitpunkt und jeden Tag ohne neue Rechnung.
+- **Anzeige:** Ab Zoomstufe 10 bis unter 15 zeigt die Karte so alle Sonnenplätze im Ausschnitt, auch über halb Hamburg. Beim Heranzoomen übernimmt wie bisher die genaue Rechnung, mit Öffnungszeiten und 3D-Modell.
+- **Genauigkeit:** Gegen die genaue Strahlrechnung geprüft (zufällige Sonnenstände über das Jahr) liegt das Profil in 95 % der Fälle bei „Sonne oder nicht“ richtig. Die Abweichungen kommen von den 10°-Schritten.
+- **Neu erzeugen** (etwa für ein anderes Gebiet oder neue Cafés):
+
+  ```
+  NODE_USE_ENV_PROXY=1 node tools/precompute-horizons.mjs 9.83 53.515 10.16 53.635 > data/horizons.json
+  ```
+
+  Mit `VERIFY=1` wird zusätzlich die Übereinstimmung mit der Strahlrechnung ausgegeben. Für das ganze Gebiet dauert der Lauf einige Minuten, vor allem wegen des Baumkatasters. Das Rechnen selbst braucht etwa 1 Sekunde.
+
 ## Sonne in der Nähe
 
 - **Der Knopf „Sonne in der Nähe“** öffnet eine Liste: geöffnete Cafés und Bars, die jetzt Sonne haben, im Umkreis von 2 km um deinen Standort. Sortiert nach Entfernung, mit Gehzeit, „Sonne bis …“ und Öffnungszeit.
@@ -54,7 +70,7 @@ Sonnen-Karte für Hamburg (und überall sonst): Wo fällt gerade Sonne auf den B
 2. Für den Sonnenstand (SunCalc) wirft jede Wand ein Schattenviereck vom Fuß bis zur Länge Höhe ÷ tan(Sonnenhöhe). Auch Wände zu Innenhöfen werfen Schatten.
 3. Schatten und Dächer werden portionsweise in eine Maske gezeichnet und dann unter den Straßennamen auf die Karte gelegt. Ein einziger Riesenpfad wäre bei Zoom 14 minutenlang beim Füllen. Alles andere an Land bekommt die Sonnenfarbe.
 
-Aufbau: `db.js` (IndexedDB: Zwischenspeicher, Rückmeldungen), `shadow.js` (Geometrie), `trees.js` (Baumkataster), `lod2.js` (3D-Stadtmodell), `sunlayer.js` (Kacheln laden, Sonne zeichnen), `places.js` (Cafés und Bars, Öffnungszeiten, Sonne am Sitzplatz), `app.js` (Karte und Bedienung). Tests: `npm test`.
+Aufbau: `profiles.js` (vorab berechnete Horizontprofile), `tools/precompute-horizons.mjs` (erzeugt sie), `db.js` (IndexedDB: Zwischenspeicher, Rückmeldungen), `shadow.js` (Geometrie), `trees.js` (Baumkataster), `lod2.js` (3D-Stadtmodell), `sunlayer.js` (Kacheln laden, Sonne zeichnen), `places.js` (Cafés und Bars, Öffnungszeiten, Sonne am Sitzplatz), `app.js` (Karte und Bedienung). Tests: `npm test`.
 
 ## Grenzen
 

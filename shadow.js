@@ -202,6 +202,43 @@ export class ShadowIndex {
   }
 }
 
+/** Höchster Horizont (tan der Höhenwinkel) in einer Richtung: wie hoch ragen Gebäude dort in den Himmel? */
+ShadowIndex.prototype.horizonTan = function (x, y, dx, dy, eye = 1.2, exclude = null, maxDist = 450) {
+  const c = this.cell, e = this.e;
+  const stamp = ++this.stampN;
+  let ix = Math.floor(x / c), iy = Math.floor(y / c);
+  const stepX = dx > 0 ? 1 : -1, stepY = dy > 0 ? 1 : -1;
+  const tDX = dx !== 0 ? Math.abs(c / dx) : Infinity, tDY = dy !== 0 ? Math.abs(c / dy) : Infinity;
+  let tMX = dx !== 0 ? ((dx > 0 ? (ix + 1) * c - x : x - ix * c) / Math.abs(dx)) : Infinity;
+  let tMY = dy !== 0 ? ((dy > 0 ? (iy + 1) * c - y : y - iy * c) / Math.abs(dy)) : Infinity;
+  let tCell = 0, best = 0;
+  while (tCell <= maxDist) {
+    // Weiter entfernte Zellen können den Horizont nur noch übertreffen, wenn das höchste Gebäude reicht
+    if (tCell > 0 && (this.maxH - eye) / tCell <= best) break;
+    const ids = this.grid.get(this._key(ix, iy));
+    if (ids) {
+      for (const id of ids) {
+        if (this.stamp[id] === stamp) continue;
+        this.stamp[id] = stamp;
+        const o = id * 7;
+        if (exclude && exclude.has(e[o + 6])) continue;
+        const ax = e[o], ay = e[o + 1];
+        const ux = e[o + 2] - ax, uy = e[o + 3] - ay;
+        const den = dx * uy - dy * ux;
+        if (Math.abs(den) < 1e-12) continue;
+        const wx = ax - x, wy = ay - y;
+        const t = (wx * uy - wy * ux) / den;
+        const s = (wx * dy - wy * dx) / den;
+        if (t < 0.05 || t > maxDist || s < 0 || s > 1) continue;
+        const v = (e[o + 4] - eye) / t;
+        if (v > best) best = v;
+      }
+    }
+    if (tMX < tMY) { tCell = tMX; tMX += tDX; ix += stepX; } else { tCell = tMY; tMY += tDY; iy += stepY; }
+  }
+  return best;
+};
+
 /** Sonnenrichtung aus SunCalc-Position (Azimut ab Süd, im Uhrzeigersinn). */
 export function sunVector(pos) {
   const bearing = pos.azimuth + Math.PI; // ab Nord, im Uhrzeigersinn

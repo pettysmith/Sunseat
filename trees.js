@@ -92,6 +92,33 @@ export class TreeIndex {
   }
 }
 
+/** Höhenwinkel-Band (tan unten/oben), das Baumkronen in einer Richtung verdecken; [0,0] wenn keine. */
+TreeIndex.prototype.bandTan = function (x, y, dx, dy, eye = 1.2, maxDist = 150) {
+  let lo = Infinity, hi = 0;
+  const c = this.cell, x1 = x + dx * maxDist, y1 = y + dy * maxDist;
+  for (let ix = Math.floor((Math.min(x, x1) - 12) / c); ix <= Math.floor((Math.max(x, x1) + 12) / c); ix++) {
+    for (let iy = Math.floor((Math.min(y, y1) - 12) / c); iy <= Math.floor((Math.max(y, y1) + 12) / c); iy++) {
+      const ids = this.grid.get(this._key(ix, iy));
+      if (!ids) continue;
+      for (const id of ids) {
+        const t = this.trees[id];
+        const vx = t.x - x, vy = t.y - y;
+        const along = vx * dx + vy * dy;
+        if (along <= 0.5 || along > maxDist) continue;
+        const lat = Math.abs(vx * dy - vy * dx);
+        const r = t.r * 0.85;
+        if (lat >= r) continue;
+        const half = Math.sqrt(r * r - lat * lat);
+        const a = (t.zc - half - eye) / along, b = (t.zc + half - eye) / along;
+        if (b <= 0) continue;
+        if (a < lo) lo = a;
+        if (b > hi) hi = b;
+      }
+    }
+  }
+  return hi > 0 ? [Math.max(0, lo), hi] : [0, 0];
+};
+
 /** Schattenellipsen der belaubten Kronen auf dem Boden (lokale Meter, gegen den Uhrzeigersinn). */
 export function treeShadows(trees, sun, date) {
   const out = [];

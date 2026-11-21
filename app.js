@@ -1,6 +1,7 @@
 // Sunseat – Sonnen-Karte mit Cafés und Bars
 import { SunLayer, MIN_ZOOM } from './sunlayer.js';
 import { addFeedback, allFeedback, feedbackFor, markReplaced } from './db.js';
+import { loadProfiles, covers, sunFraction, timeline } from './profiles.js';
 import { sunVector, compass } from './shadow.js';
 import { Places, SUNNY, openTimeline, subLabel, weekHours, preciseContext, preciseTimeline } from './places.js';
 
@@ -13,6 +14,7 @@ const STEP = 5;              // Minuten
 const PLACES_ZOOM = 15;      // ab hier alle Cafés und Bars
 const OVERVIEW_ZOOM = 13;    // ab hier die Orte in der Sonne
 const MAX_LIST = 120;
+const PROFILE_ZOOM = 10;     // ab hier vorab berechnete Sonnenplätze (Hamburg)
 const MAX_TILES = 40;        // mehr Kacheln (sehr großer Bildschirm, weit herausgezoomt) werden nicht geladen
 
 const $ = (id) => document.getElementById(id);
@@ -59,6 +61,7 @@ map.on('load', async () => {
   document.querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show');
   selectDay(0, true);
   loadClouds();
+  loadProfiles().then((pr) => { state.profiles = pr; if (pr) refreshPlaces(); });
   refreshPlaces();
 });
 
@@ -90,13 +93,18 @@ function addPlaceLayers() {
     },
     paint: { 'text-color': '#111318', 'text-halo-color': '#ffffff', 'text-halo-width': 1.6 },
   });
-  map.on('click', 'places-hit', (e) => { const f = e.features?.[0]; if (f) select(f.properties.id); });
+  map.on('click', 'places-hit', (e) => {
+    const f = e.features?.[0];
+    if (!f) return;
+    if (String(f.properties.id).startsWith('h:')) goToProfilePlace(state.profiles.places.find((x) => x.id === f.properties.id));
+    else select(f.properties.id);
+  });
   map.on('mouseenter', 'places-hit', () => { map.getCanvas().style.cursor = 'pointer'; });
   map.on('mouseleave', 'places-hit', () => { map.getCanvas().style.cursor = ''; });
 }
 
 function onStatus(s) {
-  if (s === 'zoom') notice(map.getZoom() >= OVERVIEW_ZOOM ? '' : 'Näher heranzoomen, um die Sonne zu sehen');
+  if (s === 'zoom') notice(map.getZoom() >= OVERVIEW_ZOOM || profileMode() ? '' : 'Näher heranzoomen, um die Sonne zu sehen');
   else if (s === 'loading') notice('Lade Gebäude …');
   else if (s === 'error') notice('Gebäudedaten nicht erreichbar');
   else notice('');
@@ -230,6 +238,8 @@ let placesRun = 0;
 async function refreshPlaces() {
   if (!places) return;
   const run = ++placesRun;
+  // Weit herausgezoomt in Hamburg: vorab berechnete Profile, nichts live laden
+  if (profileMode()) { renderPlaces(); return; }
   const keys = map.getZoom() >= OVERVIEW_ZOOM ? layer.visibleTiles() : [];
   if (!keys.length || keys.length > MAX_TILES) {
     state.places = [];
@@ -335,6 +345,7 @@ function passes(p, inf, i) {
 
 function renderPlaces() {
   if (!state.steps.length) return;
+  if (profileMode()) { renderProfiles(); return; }
   const i = state.idx, t = state.steps[i];
   const zoom = map.getZoom();
   const zoomOk = zoom >= PLACES_ZOOM;
@@ -364,6 +375,13 @@ function renderPlaces() {
   };
   rows.sort((a, b) => rank(a) - rank(b));
   state.rows = rows;
+  // Aus der Übersicht angetippter Ort: nach dem Heranzoomen den passenden Live-Ort öffnen
+  const pend = state.pendingSelect;
+  if (pend && zoomOk && !state.selected) {
+    const hit = state.places.find((x) => x.name === pend.name && metersBetween(x, pend) < 60);
+    if (hit) { state.pendingSelect = null; select(hit.id); return; }
+    if (Date.now() - pend.at > 30000) state.pendingSelect = null;
+  }
 
   // Karte
   map.getSource('places')?.setData({
@@ -415,6 +433,70 @@ function renderPlaces() {
       </span>
     </button>`;
     li.firstChild.onclick = () => select(p.id);
+    ul.append(li);
+  }
+}
+
+/* ================= Vorab berechnete Sonnenplätze (weiter Zoom) ================= */
+
+function profileMode() {
+  const z = map.getZoom();
+  if (z >= PLACES_ZOOM || z < PROFILE_ZOOM || !state.profiles) return false;
+  const c = map.getCenter();
+  return covers(state.profiles, c.lat, c.lng);
+}
+
+function goToProfilePlace(pl) {
+  if (!pl) return;
+  state.pendingSelect = { name: pl.name, lat: pl.lat, lon: pl.lon, at: Date.now() };
+  map.easeTo({ center: [pl.lon, pl.lat], zoom: 17, duration: 700 });
+}
+
+function renderProfiles() {
+  const pr = state.profiles;
+  const i = state.idx, sun = state.suns[i];
+  const f = state.filters;
+  const b = map.getBounds(), c = map.getCenter();
+  const sunny = [];
+  for (const pl of pr.places) {
+    if (!b.contains([pl.lon, pl.lat])) continue;
+    if (f.cafe !== f.bar && !f[pl.kind]) continue;
+    if (sunFraction(pl, sun, pr.bins) >= SUNNY) sunny.push(pl);
+  }
+  const center = { lat: c.lat, lon: c.lng };
+  sunny.sort((a, b2) => metersBetween(center, a) - metersBetween(center, b2));
+  map.getSource('places')?.setData({
+    type: 'FeatureCollection',
+    features: sunny.map((pl, k) => ({
+      type: 'Feature',
+      properties: { id: pl.id, name: pl.name, state: state.cloudy ? 'cloudsun' : 'sun', selected: false, rank: k },
+      geometry: { type: 'Point', coordinates: [pl.lon, pl.lat] },
+    })),
+  });
+  if (state.selected) return;
+  $('listTitle').textContent = sunny.length ? `${sunny.length} ${sunny.length === 1 ? 'Sonnenplatz' : 'Sonnenplätze'}` : 'Keine Sonnenplätze';
+  $('listMeta').textContent = state.cloudy ? 'frei, aber bewölkt' : 'im Ausschnitt';
+  const ul = $('list');
+  ul.replaceChildren();
+  const note = (text) => { const li = document.createElement('li'); li.className = 'empty'; li.textContent = text; ul.append(li); };
+  note(`Vorab berechnet für alle Cafés und Bars in diesem Gebiet. Öffnungszeiten, Außenplätze und die genaue Rechnung gibt es beim Heranzoomen.${f.open || f.seat ? ' Die Filter „Geöffnet“ und „Außenplätze“ wirken erst dort.' : ''}`);
+  if (state.cloudy) note('Laut Vorhersage ist es zu dieser Zeit bedeckt. Die Plätze liegen frei, direkte Sonne ist aber unwahrscheinlich.');
+  if (sun.altDeg <= 0.5) { note('Die Sonne steht zu dieser Zeit unter dem Horizont.'); return; }
+  for (const pl of sunny.slice(0, MAX_LIST)) {
+    const tl = timeline(pl, state.suns, pr.bins);
+    let j = i; while (j < tl.length && tl[j] >= SUNNY) j++;
+    const until = j >= tl.length ? 'Sonne bis Sonnenuntergang' : `Sonne bis ${hhmm(state.steps[j])}`;
+    const d = metersBetween(center, pl);
+    const li = document.createElement('li');
+    li.innerHTML = `<button type="button" class="row">
+      <span class="status-dot ${state.cloudy ? 'cloudsun' : 'sun'}" aria-hidden="true"></span>
+      <span class="row-main">
+        <span class="row-title">${esc(pl.name)}</span>
+        <span class="row-sub"><span class="${state.cloudy ? '' : 'is-sun'}">${state.cloudy ? 'Frei, aber bewölkt' : until}</span></span>
+        <span class="row-sub">${subLabel(pl)} · ${d < 1000 ? Math.round(d / 10) * 10 + ' m' : (d / 1000).toFixed(1).replace('.', ',') + ' km'} von der Kartenmitte</span>
+      </span>
+    </button>`;
+    li.firstChild.onclick = () => goToProfilePlace(pl);
     ul.append(li);
   }
 }
