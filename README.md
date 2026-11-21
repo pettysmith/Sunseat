@@ -2,17 +2,22 @@
 
 Welche Café-Terrasse in deiner Nähe liegt gerade in der Sonne? Sunseat ist eine Web-App für den Homescreen (iPhone und Android). Sie läuft ohne Server, Konto oder API-Schlüssel.
 
-## Was die App kann (Stufe 1 und 2)
+## Was die App kann
 
-- Standort per GPS, Ortssuche oder Schnellwahl (Schanze, Ottensen, Eppendorf, Innenstadt, Uhlenhorst)
-- Cafés und Eisdielen im Umkreis von 300, 500 oder 800 m aus OpenStreetMap
-- Für jedes Café: Sonne, Halbschatten oder Schatten, „Sonne bis …“ oder „Sonne ab …“, Sonnenminuten am Tag
-- Öffnungszeiten ausgewertet (inkl. Feiertage in Hamburg), Hinweis auf Außenplätze
-- Zeitregler für heute und die nächsten sechs Tage. Das Balkendiagramm über dem Regler zeigt, wie viele geöffnete Terrassen zu jeder Zeit in der Sonne liegen.
-- Bewölkung und Sonnenscheindauer aus Open-Meteo. Ist es bewölkt, wird „Sonne“ als „bewölkt“ markiert.
-- Eine Tagesleiste pro Café: oben Sonne und Schatten, unten die Öffnungszeit
-- **Karte:** Gelbe Flächen bekommen zur gewählten Zeit Sonne, blaue liegen im Schatten. Die Cafés sind Punkte in der Farbe ihres Zustands. Tippst du ein Café an, zeigen kleine Punkte, wo die Sitzplätze vermutet werden und ob dort gerade Sonne ist. Mit dem Knopf „3D“ werden die Gebäude in der angenommenen Höhe angezeigt.
-- Funktioniert nach dem ersten Laden auch offline (nur die App selbst, nicht die Daten)
+- Karte über den ganzen Bildschirm wie bei Google Maps: Suchleiste oben, Filter-Chips (☀️ Sonne jetzt, 🕐 Geöffnet, 🪑 Draußen sitzen, 🍦 Eis, Umkreis)
+- Gelbe Flächen auf der Karte bekommen Sonne, blaue liegen im Schatten. Die Flächen wandern mit dem Zeitregler.
+- Café-Pins: sonnige Cafés leuchten gelb mit ☀️ und Namen, Cafés im Schatten sind grau, geschlossene verblasst
+- Panel zum Hochziehen mit Zeitregler, Tagesauswahl (mit vorhergesagten Sonnenstunden) und der Liste „Sonnenplätze offen“
+- Detailansicht pro Café: „Sonne bis 14:00 – noch 2 h“, Sonnenkurve des Tages, Öffnungszeiten, Route, Teilen, Link zu den Google-Bewertungen
+- Eigene Bewertungen: Sterne, Schlagworte (Decken, Heizstrahler, Hunde ok …) und Notiz, gespeichert auf dem Gerät
+- Sonnen-Note (0–5 ☀) pro Café und Tag, berechnet aus den Sonnenminuten
+- 3D-Ansicht mit den Gebäudehöhen, mit denen gerechnet wird
+- Bewölkung und Temperatur von Open-Meteo
+- Funktioniert nach dem ersten Laden auch offline (die App, nicht die Daten)
+
+### Warum keine Google-Bewertungen in der App?
+
+Nach den Nutzungsbedingungen der Google Maps Platform dürfen Inhalte aus Google Places, also auch Bewertungen, nicht zusammen mit einer Karte angezeigt werden, die nicht von Google ist. Außerdem bräuchte die App dafür einen kostenpflichtigen API-Schlüssel. Der Knopf „Google“ öffnet deshalb das Café direkt in Google Maps.
 
 ## Wie gerechnet wird
 
@@ -21,7 +26,7 @@ Welche Café-Terrasse in deiner Nähe liegt gerade in der Sonne? Sunseat ist ein
 3. Für jeden 10-Minuten-Schritt zwischen Sonnenauf- und -untergang (SunCalc) geht von jedem Punkt ein Strahl Richtung Sonne. Ein Raster-Index (Amanatides-Woo) sucht die Gebäudekanten auf dem Weg. Liegt eine Kante unter der Gebäudehöhe, gilt der Punkt als verschattet.
 4. Sonne gilt, wenn mindestens 2 von 3 Punkten frei sind.
 
-Die Geometrie steckt in `shadow.js`, die Tests in `test/` (`npm test`, Node ≥ 20).
+Aufbau: `shadow.js` (Geometrie), `data.js` (Laden und Rechnen), `map.js` (Karte), `app.js` (Oberfläche). Tests in `test/` (`npm test`, Node ≥ 20).
 
 ## Veröffentlichen mit GitHub Pages
 

@@ -1,7 +1,7 @@
 // Sunseat Service Worker: App-Dateien offline vorhalten, Daten immer frisch laden.
-const VERSION = 'sunseat-v2';
+const VERSION = 'sunseat-v3';
 const SHELL = [
-  './', 'index.html', 'style.css', 'app.js', 'shadow.js', 'map.js', 'manifest.webmanifest',
+  './', 'index.html', 'style.css', 'app.js', 'shadow.js', 'map.js', 'data.js', 'manifest.webmanifest',
   'vendor/suncalc.js', 'vendor/opening_hours.js', 'vendor/maplibre-gl.js', 'vendor/maplibre-gl.css', 'icons/icon.svg', 'icons/icon-192.png', 'icons/apple-touch-icon.png',
 ];
 

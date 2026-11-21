@@ -1,25 +1,20 @@
+import { compass } from './shadow.js';
 import {
-  makeProjection, ShadowIndex, buildingsFromOverpass, terraceSamples, sunVector, compass,
-} from './shadow.js';
+  STEP_MIN, SUNNY, fetchOsm, fetchWeather, searchPlaces, buildArea, computeDay, dayDate,
+  weatherAt, isCloudy, daySunshineHours, sampleLit, sunClass, sunMinutes,
+} from './data.js';
 import { SunMap } from './map.js';
 
-/* global SunCalc, opening_hours */
-
-const DEFAULT_PLACE = { lat: 53.5636, lon: 9.9662, label: 'Sternschanze', source: 'default' };
-const STEP_MIN = 10;
-const SUNNY = 0.6;           // ab diesem Anteil der Sitzpunkte gilt „Sonne“
-const CLOUDY_MIN = 15;       // weniger Sonnenminuten pro Stunde = „bewölkt“
-const OVERPASS = [
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter',
-];
+const DEFAULT_PLACE = { lat: 53.5636, lon: 9.9662, label: 'Schanze', source: 'default' };
+const RATING_TAGS = ['☕ Guter Kaffee', '🥐 Leckeres Essen', '🧣 Decken', '🔥 Heizstrahler', '🐶 Hunde ok', '💻 Laptop ok', '👶 Kinderfreundlich', '🌿 Ruhig'];
 
 const $ = (id) => document.getElementById(id);
 const fmtTime = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' });
-const fmtDay = new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: 'numeric' });
+const fmtDayShort = new Intl.DateTimeFormat('de-DE', { weekday: 'short' });
 const fmtWeekday = new Intl.DateTimeFormat('de-DE', { weekday: 'long' });
 const fmtDate = new Intl.DateTimeFormat('de-DE', { day: 'numeric', month: 'long' });
 const hhmm = (d) => fmtTime.format(d);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem('sunseat.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -28,21 +23,22 @@ const store = {
 
 const state = {
   place: null,
-  cafes: [],
-  index: null,
-  weather: null,       // Map 'YYYY-MM-DDTHH' -> {cloud, sunMin}
+  area: null,
+  weather: null,
+  days: new Map(),
   dayOffset: 0,
   step: 0,
-  days: new Map(),     // dayOffset -> Tagesverlauf
-  filters: store.get('filters', { open: false, sun: false, noSeat: true, radius: 500 }),
-  loadId: 0,
-  view: store.get('view', 'map'),
   selected: null,
-  map: null,
+  filters: { sun: false, open: false, seat: false, ice: false, ...store.get('filters2', {}) },
+  radius: store.get('radius', 500),
+  ratings: store.get('ratings', {}),
+  loadId: 0,
   drawnKey: null,
+  map: null,
+  pendingCafe: new URLSearchParams(location.search).get('cafe'),
 };
 
-/* ---------- Ort ---------- */
+/* ================= Ort ================= */
 
 function placeFromUrl() {
   const p = new URLSearchParams(location.search);
@@ -55,680 +51,716 @@ function getGps() {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) return reject(new Error('kein GPS'));
     navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy: pos.coords.accuracy, label: 'Mein Standort', source: 'gps' }),
-      reject,
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 },
+      (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy: pos.coords.accuracy, label: 'Hier bei dir', source: 'gps' }),
+      reject, { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 },
     );
   });
 }
 
+async function useGps() {
+  toast('📍 Suche deinen Standort …');
+  try { setPlace(await getGps()); } catch {
+    toast('Kein Standortzugriff – ich zeige dir die Schanze.', 3500);
+    setPlace({ ...DEFAULT_PLACE });
+  }
+}
+
 function setPlace(place) {
   state.place = place;
-  const acc = place.accuracy ? ` (±${Math.round(place.accuracy)} m)` : '';
-  $('locLabel').textContent = `📍 ${place.label}${acc}`;
-  if (place.source !== 'gps' && place.source !== 'default') {
-    const u = new URL(location.href);
-    u.searchParams.set('lat', place.lat.toFixed(5));
-    u.searchParams.set('lon', place.lon.toFixed(5));
-    u.searchParams.set('name', place.label);
-    history.replaceState(null, '', u);
-  } else if (location.search) {
-    history.replaceState(null, '', location.pathname);
-  }
-  $('search').hidden = true;
+  $('placeLabel').textContent = place.label;
+  $('placeSub').textContent = place.source === 'gps' ? `Umkreis ${state.radius} m um dich` : `Umkreis ${state.radius} m`;
+  updateUrl();
+  closeSearch();
   load();
 }
 
-async function useGps() {
-  setStatus('Suche deinen Standort …');
-  try {
-    setPlace(await getGps());
-  } catch {
-    setPlace({ ...DEFAULT_PLACE, note: 'Kein Standortzugriff, deshalb siehst du die Sternschanze. Tippe oben auf den Ort, um ihn zu ändern. ' });
+function updateUrl() {
+  const u = new URL(location.href);
+  u.search = '';
+  const p = state.place;
+  if (p && p.source !== 'gps' && p.source !== 'default') {
+    u.searchParams.set('lat', p.lat.toFixed(5));
+    u.searchParams.set('lon', p.lon.toFixed(5));
+    u.searchParams.set('name', p.label);
   }
+  if (state.selected) u.searchParams.set('cafe', state.selected);
+  history.replaceState(null, '', u);
 }
 
-/* ---------- Daten ---------- */
-
-async function overpass(query) {
-  let lastErr;
-  for (const url of OVERPASS) {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 70000);
-    try {
-      const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(query), signal: ctrl.signal,
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-      if (!r.ok) throw new Error('Overpass ' + r.status);
-      return await r.json();
-    } catch (e) { lastErr = e; } finally { clearTimeout(t); }
-  }
-  throw lastErr;
-}
-
-function osmQuery(lat, lon, r) {
-  const rb = r + 250;
-  return `[out:json][timeout:60];
-nwr["amenity"~"^(cafe|ice_cream)$"](around:${r},${lat},${lon});
-out center tags;
-(
-  way["building"](around:${rb},${lat},${lon});
-  way["building:part"](around:${rb},${lat},${lon});
-  relation["building"]["type"="multipolygon"](around:${rb},${lat},${lon});
-);
-out geom qt;`;
-}
-
-async function loadWeather(lat, lon) {
-  const u = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}`
-    + '&hourly=cloud_cover,sunshine_duration&timezone=Europe%2FBerlin&forecast_days=7';
-  const r = await fetch(u);
-  if (!r.ok) throw new Error('Open-Meteo ' + r.status);
-  const j = await r.json();
-  const m = new Map();
-  j.hourly.time.forEach((t, i) => m.set(t.slice(0, 13), {
-    cloud: j.hourly.cloud_cover[i],
-    sunMin: j.hourly.sunshine_duration[i] != null ? j.hourly.sunshine_duration[i] / 60 : null,
-  }));
-  return m;
-}
-
-function hourKey(d) {
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}`;
-}
-
-/** Open-Meteo-Summen gelten für die vorangehende Stunde: 12:20 gehört zum Wert von 13:00. */
-function weatherAt(d) {
-  if (!state.weather) return null;
-  const cloud = state.weather.get(hourKey(d));
-  const next = new Date(d); next.setMinutes(0, 0, 0); next.setHours(next.getHours() + 1);
-  const sum = state.weather.get(hourKey(next));
-  if (!cloud && !sum) return null;
-  return { cloud: cloud?.cloud ?? sum?.cloud, sunMin: sum?.sunMin ?? cloud?.sunMin };
-}
-
-function daySunshineHours(date) {
-  if (!state.weather) return null;
-  let total = 0, any = false;
-  const d = new Date(date); d.setHours(1, 0, 0, 0);
-  for (let h = 1; h <= 24; h++) {
-    const w = state.weather.get(hourKey(d));
-    if (w && w.sunMin != null) { total += w.sunMin; any = true; }
-    d.setHours(d.getHours() + 1);
-  }
-  return any ? total / 60 : null;
-}
-
-function makeOpeningHours(tags, lat, lon) {
-  const v = tags.opening_hours;
-  if (!v) return null;
-  try {
-    return new opening_hours(v, { lat, lon, address: { country_code: 'de', state: 'Hamburg' } }, { locale: 'de' });
-  } catch {
-    return 'invalid';
-  }
-}
-
-function seatingOf(tags) {
-  const v = tags.outdoor_seating;
-  if (v == null) return 'unknown';
-  return v === 'no' ? 'no' : 'yes';
-}
-
-function distance(a, b) {
-  const R = 6371000, toR = Math.PI / 180;
-  const dLat = (b.lat - a.lat) * toR, dLon = (b.lon - a.lon) * toR;
-  const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * toR) * Math.cos(b.lat * toR) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(s));
-}
+/* ================= Laden ================= */
 
 async function load() {
   const id = ++state.loadId;
   const { lat, lon } = state.place;
   state.days.clear();
+  state.area = null;
+  state.selected = null;
+  showList();
+  $('listTitle').innerHTML = '<span class="spin">☀️</span> Die Sonne sucht Plätze …';
+  $('listSub').textContent = 'Cafés und Häuser kommen aus OpenStreetMap. Das dauert meist 5 bis 20 Sekunden.';
   $('list').replaceChildren();
-  setStatus('Lade Cafés und Gebäude aus OpenStreetMap … (dauert meist 5–20 Sekunden)');
-  const weatherP = loadWeather(lat, lon).catch(() => null);
+  const mapP = ensureMap();
+  const weatherP = fetchWeather(lat, lon).catch(() => null);
   let osm;
   try {
-    osm = await overpass(osmQuery(lat, lon, state.filters.radius));
-  } catch (e) {
+    osm = await fetchOsm(lat, lon, state.radius);
+  } catch {
     if (id !== state.loadId) return;
-    setStatus('OpenStreetMap ist gerade nicht erreichbar. Versuch es gleich noch einmal.', true, true);
+    $('listTitle').textContent = '🙈 OpenStreetMap antwortet gerade nicht';
+    $('listSub').innerHTML = '<button class="btn" id="retry">Nochmal versuchen</button>';
+    $('retry').onclick = load;
     return;
   }
   if (id !== state.loadId) return;
-  setStatus('Berechne Schatten …');
   await new Promise((r) => setTimeout(r, 0));
-
-  const proj = makeProjection(lat, lon);
-  const buildings = buildingsFromOverpass(osm.elements, proj);
-  const index = new ShadowIndex(buildings);
-  const cafes = [];
-  for (const el of osm.elements) {
-    const t = el.tags || {};
-    if (t.amenity !== 'cafe' && t.amenity !== 'ice_cream') continue;
-    const clat = el.lat ?? el.center?.lat, clon = el.lon ?? el.center?.lon;
-    if (clat == null) continue;
-    const [x, y] = proj.toXY(clat, clon);
-    const terr = terraceSamples(index, x, y);
-    const samples = terr.samples.map(([sx, sy]) => {
-      const ex = index.buildingsAt(sx, sy);
-      return { x: sx, y: sy, ex: ex.length ? new Set(ex) : null };
-    });
-    cafes.push({
-      id: el.type[0] + el.id, osmType: el.type, osmId: el.id,
-      name: t.name || (t.amenity === 'ice_cream' ? 'Eisdiele ohne Namen' : 'Café ohne Namen'),
-      kind: t.amenity === 'ice_cream' ? 'Eisdiele' : 'Café',
-      lat: clat, lon: clon, tags: t,
-      dist: distance(state.place, { lat: clat, lon: clon }),
-      seating: seatingOf(t),
-      oh: makeOpeningHours(t, clat, clon),
-      samples, facadeDeg: terr.facadeDeg, mode: terr.mode,
-    });
-  }
-  cafes.forEach((c, k) => { c._i = k; });
-  state.cafes = cafes;
-  state.proj = proj;
-  state.buildings = buildings;
-  state.extent = state.filters.radius + 250;
-  state.selected = null;
-  state.drawnKey = null;
-  state.areaSet = false;
-  state.index = index;
-  state.estimatedShare = buildings.length ? buildings.filter((b) => b.estimated).length / buildings.length : 0;
+  const area = buildArea(osm, state.place, state.radius);
   state.weather = await weatherP;
   if (id !== state.loadId) return;
+  state.area = area;
+  state.drawnKey = null;
 
-  // Startzeit wählen: heute jetzt, oder morgen, wenn heute keine Sonne mehr kommt
+  await mapP.catch(() => {});
+  if (state.map?.map) state.map.setArea({ place: state.place, ...area });
+
   const now = new Date();
-  const today = dayInfo(0);
-  let note = state.place.note || '';
-  if (now > today.sunset) {
-    state.dayOffset = 1;
-    note += 'Heute ist die Sonne schon untergegangen. Du siehst morgen. ';
-  } else state.dayOffset = 0;
-  selectDay(state.dayOffset, true);
-  setStatus(note + summaryText(), !!state.place.note);
-  if (state.view === 'map') showView('map');
+  state.dayOffset = now > day(0).sunset ? 1 : 0;
+  if (state.dayOffset === 1) toast('🌙 Heute ist die Sonne schon weg. Hier ist morgen.', 4000);
+  selectDay(state.dayOffset);
+  if (state.pendingCafe && area.cafes.some((c) => c.id === state.pendingCafe)) select(state.pendingCafe);
+  state.pendingCafe = null;
 }
 
-/* ---------- Tagesverlauf ---------- */
-
-function dayDate(offset) {
-  const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + offset);
-  return d;
+function day(offset) {
+  if (!state.days.has(offset)) state.days.set(offset, computeDay(state.area, state.place, offset));
+  return state.days.get(offset);
 }
 
-function dayInfo(offset) {
-  if (state.days.has(offset)) return state.days.get(offset);
-  const { lat, lon } = state.place;
-  const noon = dayDate(offset);
-  const times = SunCalc.getTimes(noon, lat, lon);
-  const start = new Date(times.sunrise); start.setMinutes(Math.floor(start.getMinutes() / STEP_MIN) * STEP_MIN, 0, 0);
-  const steps = [];
-  for (let t = start.getTime(); t <= times.sunset.getTime() + STEP_MIN * 60000; t += STEP_MIN * 60000) steps.push(new Date(t));
-  const suns = steps.map((d) => sunVector(SunCalc.getPosition(d, lat, lon)));
-  const idx = state.index;
-  const perCafe = state.cafes.map((c) => {
-    const sun = new Float32Array(steps.length);
-    const open = new Uint8Array(steps.length); // 0 zu, 1 offen, 2 unbekannt
-    for (let i = 0; i < steps.length; i++) {
-      const s = suns[i];
-      if (s.altDeg <= 0.5) sun[i] = -1;
-      else {
-        let lit = 0;
-        for (const p of c.samples) if (!idx.isShaded(p.x, p.y, s.dx, s.dy, s.tanAlt, 1.2, p.ex)) lit++;
-        sun[i] = lit / c.samples.length;
-      }
-      open[i] = openCode(c, steps[i]);
-    }
-    return { sun, open };
-  });
-  const info = { offset, steps, suns, perCafe, sunrise: times.sunrise, sunset: times.sunset, noon };
-  state.days.set(offset, info);
-  return info;
-}
+/* ================= Auswertung ================= */
 
-function openCode(c, d) {
-  if (!c.oh || c.oh === 'invalid') return 2;
-  try {
-    if (c.oh.getUnknown(d)) return 2;
-    return c.oh.getState(d) ? 1 : 0;
-  } catch { return 2; }
-}
-
-/* ---------- Filter & Auswertung ---------- */
-
-function visible(c, day, i) {
+function passes(c, d, i) {
   const f = state.filters;
-  if (f.noSeat && c.seating === 'no') return false;
-  const pc = day.perCafe[c._i];
+  const pc = d.perCafe[c._i];
+  if (f.seat && c.seating !== 'yes') return false;
+  if (!f.seat && c.seating === 'no') return false;
+  if (f.ice && c.kind !== 'Eisdiele') return false;
   if (f.open && pc.open[i] === 0) return false;
   if (f.sun && !(pc.sun[i] >= SUNNY)) return false;
   return true;
 }
 
-function sunnyCount(day, i) {
+function sunnyCount(d, i) {
   let n = 0;
-  state.cafes.forEach((c, k) => {
-    const pc = day.perCafe[k];
-    if (state.filters.noSeat && c.seating === 'no') return;
-    if (pc.open[i] === 0) return;
+  for (const c of state.area.cafes) {
+    const pc = d.perCafe[c._i];
+    if (c.seating === 'no' || pc.open[i] === 0) continue;
+    if (state.filters.ice && c.kind !== 'Eisdiele') continue;
     if (pc.sun[i] >= SUNNY) n++;
-  });
+  }
   return n;
 }
 
-function bestStep(day) {
-  // Bei Gleichstand gewinnt die Zeit näher am Mittag
-  const noon = SunCalc.getTimes(day.noon, state.place.lat, state.place.lon).solarNoon;
+function bestStep(d) {
   let best = 0, bestN = -1, bestD = Infinity;
-  day.steps.forEach((t, i) => {
-    const n = sunnyCount(day, i), d = Math.abs(t - noon);
-    if (n > bestN || (n === bestN && d < bestD)) { bestN = n; best = i; bestD = d; }
+  d.steps.forEach((t, i) => {
+    const n = sunnyCount(d, i), dist = Math.abs(t - d.solarNoon);
+    if (n > bestN || (n === bestN && dist < bestD)) { bestN = n; best = i; bestD = dist; }
   });
   return best;
 }
 
-function nearestStep(day, d) {
+function nearestStep(d, t) {
   let best = 0, bd = Infinity;
-  day.steps.forEach((s, i) => { const x = Math.abs(s - d); if (x < bd) { bd = x; best = i; } });
+  d.steps.forEach((s, i) => { const x = Math.abs(s - t); if (x < bd) { bd = x; best = i; } });
   return best;
 }
 
-function sunDescription(sun, steps, i, day) {
-  const v = sun[i];
-  const fmtEnd = (j) => (j >= steps.length - 1 || sun[j] < 0) ? `bis Sonnenuntergang ${hhmm(day.sunset)}` : `bis ${hhmm(steps[j])}`;
-  if (v < 0) {
-    if (steps[i] < day.sunrise) {
-      const j = sun.findIndex((x) => x >= SUNNY);
-      return { cls: 'night', label: 'Vor Sonnenaufgang', sub: j >= 0 ? `Sonne ab ${hhmm(steps[j])}` : 'keine Sonne an diesem Tag' };
-    }
-    return { cls: 'night', label: 'Sonne untergegangen', sub: '' };
-  }
-  if (v >= SUNNY) {
-    let j = i; while (j < sun.length && sun[j] >= SUNNY) j++;
-    return { cls: 'sun', label: v === 1 ? 'Sonne' : 'Fast ganz Sonne', sub: fmtEnd(j) };
-  }
-  let j = i; while (j < sun.length && !(sun[j] >= SUNNY)) j++;
-  const later = j < sun.length && sun[j] >= 0 ? `Sonne ab ${hhmm(steps[j])}` : 'danach keine Sonne mehr';
-  if (v > 0) return { cls: 'part', label: 'Halbschatten', sub: later };
-  return { cls: 'shade', label: 'Schatten', sub: later };
-}
-
-function openDescription(c, d, code) {
-  if (!c.oh) return { cls: 'unk', label: 'Öffnungszeiten unbekannt' };
-  if (c.oh === 'invalid' || code === 2) return { cls: 'unk', label: 'Öffnungszeiten unklar' };
-  let next = null;
-  try { next = c.oh.getNextChange(d); } catch { /* egal */ }
-  const when = (n) => {
-    if (!n) return '';
-    if (n.toDateString() === d.toDateString()) return hhmm(n);
-    if (n - d < 6 * 864e5) return `${fmtWeekday.format(n)} ${hhmm(n)}`;
-    return `am ${fmtDate.format(n)}`;
-  };
-  if (code === 1) return { cls: 'open', label: next ? `geöffnet bis ${when(next)}` : 'geöffnet' };
-  return { cls: 'closed', label: next ? `geschlossen · öffnet ${when(next)}` : 'geschlossen' };
-}
-
-function sunMinutesOfDay(sun) {
-  let n = 0; for (const v of sun) if (v >= SUNNY) n++;
-  return n * STEP_MIN;
-}
-
-function fmtDuration(min) {
+function fmtDur(min) {
   if (min < 60) return `${min} min`;
   const h = Math.floor(min / 60), m = min % 60;
   return m ? `${h} h ${m} min` : `${h} h`;
 }
 
-function summaryText() {
-  const day = dayInfo(state.dayOffset);
-  const n = state.cafes.length;
-  if (!n) return 'Keine Cafés in diesem Umkreis gefunden. Probier einen größeren Umkreis.';
-  const best = bestStep(day), bn = sunnyCount(day, best);
-  const which = state.dayOffset === 0 ? 'heute' : state.dayOffset === 1 ? 'morgen' : `am ${fmtWeekday.format(day.noon)}`;
-  const found = n === 1 ? '1 Café gefunden.' : `${n} Cafés gefunden.`;
-  if (!bn) return `${found} ${which[0].toUpperCase() + which.slice(1)} liegt laut Berechnung keine geöffnete Terrasse in der Sonne.`;
-  return `${found} Die meisten Sonnenplätze ${which}: ${bn === 1 ? 'einer' : bn} um ${hhmm(day.steps[best])}.`;
+/** Sonnenzustand eines Cafés zur Zeit i, mit Text für Liste und Detail. */
+function sunInfo(c, d, i) {
+  const sun = d.perCafe[c._i].sun, steps = d.steps;
+  const v = sun[i], cls = sunClass(v);
+  const t = steps[i];
+  if (cls === 'night') {
+    const j = sun.findIndex((x) => x >= SUNNY);
+    if (t < d.sunrise) return { cls, short: j >= 0 ? `Sonne ab ${hhmm(steps[j])}` : 'Heute ohne Sonne', big: 'Noch dunkel', sub: j >= 0 ? `Sonne ab ${hhmm(steps[j])}` : 'An diesem Tag keine Sonne' };
+    return { cls, short: 'Sonne ist weg', big: 'Sonne ist weg 🌙', sub: `Untergang war um ${hhmm(d.sunset)}` };
+  }
+  if (cls === 'sun') {
+    let j = i; while (j < sun.length && sun[j] >= SUNNY) j++;
+    const toSunset = j >= sun.length - 1 || sun[j] < 0;
+    const end = toSunset ? d.sunset : steps[j];
+    const left = Math.max(0, Math.round((end - t) / 60000));
+    return { cls, short: toSunset ? 'Sonne bis Untergang' : `Sonne bis ${hhmm(end)}`, big: toSunset ? `Sonne bis ${hhmm(end)} 🌇` : `Sonne bis ${hhmm(end)}`, sub: `noch ${fmtDur(left)}` };
+  }
+  let j = i; while (j < sun.length && !(sun[j] >= SUNNY)) j++;
+  const has = j < sun.length && sun[j] >= 0;
+  const wait = has ? Math.round((steps[j] - t) / 60000) : 0;
+  if (cls === 'part') return { cls, short: 'Halb in der Sonne', big: 'Halb Sonne, halb Schatten', sub: has ? `ganz sonnig ab ${hhmm(steps[j])}` : 'Mehr Sonne kommt heute nicht' };
+  return { cls, short: has ? `Sonne ab ${hhmm(steps[j])}` : 'Heute keine Sonne mehr', big: has ? `Sonne ab ${hhmm(steps[j])}` : 'Heute keine Sonne mehr', sub: has ? `in ${fmtDur(wait)}` : 'Morgen vielleicht?' };
 }
 
-/* ---------- Darstellung ---------- */
+function openInfo(c, t, code) {
+  if (!c.oh) return { cls: 'unk', short: 'Öffnungszeiten unbekannt' };
+  if (c.oh === 'invalid' || code === 2) return { cls: 'unk', short: 'Öffnungszeiten unklar' };
+  let next = null;
+  try { next = c.oh.getNextChange(t); } catch { /* egal */ }
+  const when = (n) => {
+    if (!n) return '';
+    if (n.toDateString() === t.toDateString()) return hhmm(n);
+    if (n - t < 6 * 864e5) return `${fmtWeekday.format(n)} ${hhmm(n)}`;
+    return `am ${fmtDate.format(n)}`;
+  };
+  if (code === 1) return { cls: 'open', short: next ? `Geöffnet bis ${when(next)}` : 'Geöffnet' };
+  return { cls: 'closed', short: next ? `Geschlossen · öffnet ${when(next)}` : 'Geschlossen' };
+}
 
-function setStatus(text, warn = false, retry = false) {
-  const el = $('status');
-  el.textContent = text;
-  el.classList.toggle('warn', warn);
-  if (retry) {
-    const b = document.createElement('button');
-    b.textContent = 'Nochmal';
-    b.className = 'retry';
-    b.onclick = () => load();
-    el.append(' ', b);
-  }
+/* ================= Bewertungen ================= */
+
+function rating(id) { return state.ratings[id] || null; }
+function saveRating(id, patch) {
+  const r = { stars: 0, tags: [], note: '', ...(state.ratings[id] || {}), ...patch, ts: Date.now() };
+  if (!r.stars && !r.tags.length && !r.note) delete state.ratings[id];
+  else state.ratings[id] = r;
+  store.set('ratings', state.ratings);
+}
+
+function starsHtml(n, cls = '') {
+  let s = `<span class="stars ${cls}" aria-label="${n} von 5 Sternen">`;
+  for (let k = 1; k <= 5; k++) s += `<svg class="${k <= n ? 'on' : ''}"><use href="#i-star"/></svg>`;
+  return s + '</span>';
+}
+
+/** Sonnen-Note: Sonnenminuten des Tages als 0–5 Sonnen. */
+function sunScore(c, d) {
+  const total = sunMinutes(d.perCafe[c._i].sun);
+  const daylight = (d.sunset - d.sunrise) / 60000;
+  return { total, score: Math.round(Math.min(1, total / Math.max(60, daylight * 0.6)) * 5) };
+}
+
+/* ================= Darstellung ================= */
+
+function selectDay(offset) {
+  state.dayOffset = offset;
+  const d = day(offset);
+  const now = new Date();
+  state.step = offset === 0 && now >= d.steps[0] && now <= d.sunset ? nearestStep(d, now) : bestStep(d);
+  const slider = $('time');
+  slider.max = d.steps.length - 1;
+  slider.value = state.step;
+  $('riseLabel').textContent = `🌅 ${hhmm(d.sunrise)}`;
+  $('setLabel').textContent = `${hhmm(d.sunset)} 🌇`;
+  renderDays();
+  drawHisto();
+  render();
 }
 
 function renderDays() {
   const wrap = $('days');
   wrap.replaceChildren();
   for (let o = 0; o < 7; o++) {
-    const d = dayDate(o);
+    const dd = dayDate(o);
     const b = document.createElement('button');
     b.type = 'button';
-    b.role = 'tab';
+    b.setAttribute('role', 'tab');
     b.className = 'day' + (o === state.dayOffset ? ' active' : '');
     b.setAttribute('aria-selected', o === state.dayOffset);
-    const h = daySunshineHours(d);
-    const name = o === 0 ? 'Heute' : o === 1 ? 'Morgen' : fmtDay.format(d);
-    b.innerHTML = `<span>${name}</span><small>${h == null ? '' : '☀ ' + h.toLocaleString('de-DE', { maximumFractionDigits: 1 }) + ' h'}</small>`;
+    const h = daySunshineHours(state.weather, dd);
+    const icon = h == null ? '' : h >= 4 ? '☀️' : h >= 1.5 ? '🌤️' : h > 0.3 ? '⛅' : '☁️';
+    const name = o === 0 ? 'Heute' : o === 1 ? 'Morgen' : fmtDayShort.format(dd);
+    b.innerHTML = `<span class="day-ico">${icon}</span><span>${name}</span>${h == null ? '' : `<small>${h.toLocaleString('de-DE', { maximumFractionDigits: 1 })} h</small>`}`;
     b.onclick = () => selectDay(o);
     wrap.append(b);
   }
 }
 
-function selectDay(offset, initial = false) {
-  state.dayOffset = offset;
-  const day = dayInfo(offset);
-  const now = new Date();
-  if (offset === 0 && now >= day.steps[0] && now <= day.sunset) state.step = nearestStep(day, now);
-  else state.step = bestStep(day);
-  const slider = $('time');
-  slider.max = day.steps.length - 1;
-  slider.value = state.step;
-  renderDays();
-  drawHisto();
-  render();
-  if (!initial) setStatus(summaryText());
-}
-
 function drawHisto() {
-  const day = dayInfo(state.dayOffset);
+  if (!state.area) return;
+  const d = day(state.dayOffset);
   const cv = $('histo');
   const dpr = window.devicePixelRatio || 1;
   const w = cv.clientWidth, h = cv.clientHeight;
+  if (!w) return;
   cv.width = w * dpr; cv.height = h * dpr;
   const g = cv.getContext('2d');
   g.scale(dpr, dpr);
-  g.clearRect(0, 0, w, h);
-  const counts = day.steps.map((_, i) => sunnyCount(day, i));
+  const counts = d.steps.map((_, i) => sunnyCount(d, i));
   const max = Math.max(1, ...counts);
-  const css = getComputedStyle(document.documentElement);
-  const sunC = css.getPropertyValue('--sun').trim();
-  const cloudC = css.getPropertyValue('--cloud').trim();
-  const thumb = 14; // Platz links/rechts wie der Regler-Knopf
+  const thumb = 15;
   const bw = (w - thumb * 2) / counts.length;
   counts.forEach((n, i) => {
-    const bh = (n / max) * (h - 4);
-    const wx = weatherAt(day.steps[i]);
-    g.fillStyle = wx && wx.sunMin != null && wx.sunMin < CLOUDY_MIN ? cloudC : sunC;
-    g.fillRect(thumb + i * bw + 0.5, h - bh, Math.max(1, bw - 1), bh);
+    const bh = n ? Math.max(3, (n / max) * (h - 2)) : 2;
+    const cloudy = isCloudy(weatherAt(state.weather, d.steps[i]));
+    g.fillStyle = !n ? 'rgba(128,128,128,.25)' : cloudy ? '#b8c0cc' : '#fbbf24';
+    const x = thumb + i * bw;
+    g.beginPath();
+    g.roundRect(x + 0.6, h - bh, Math.max(1.5, bw - 1.2), bh, [2, 2, 0, 0]);
+    g.fill();
   });
 }
 
 function render() {
-  const day = dayInfo(state.dayOffset);
+  if (!state.area) return;
+  const d = day(state.dayOffset);
   const i = state.step;
-  const t = day.steps[i];
-  const sun = day.suns[i];
+  const t = d.steps[i];
+  const sun = d.suns[i];
   const now = new Date();
-  const isPast = t < now - STEP_MIN * 60000;
-  $('timeLabel').textContent = `${state.dayOffset === 0 ? 'Heute' : fmtWeekday.format(t)}, ${hhmm(t)}${isPast ? ' (vorbei)' : ''}`;
-  $('sunLabel').textContent = sun.altDeg > 0
-    ? `Sonne ${Math.round(sun.altDeg)}° hoch aus ${compass(sun.bearingDeg)}`
-    : 'Sonne unter dem Horizont';
   const isNow = state.dayOffset === 0 && Math.abs(t - now) < STEP_MIN * 60000;
+  const dayName = state.dayOffset === 0 ? 'Heute' : state.dayOffset === 1 ? 'Morgen' : fmtWeekday.format(t);
+  $('timeLabel').textContent = `${dayName}, ${hhmm(t)}`;
+  $('sunLabel').textContent = sun.altDeg > 0
+    ? `☀️ ${Math.round(sun.altDeg)}° hoch aus ${compass(sun.bearingDeg)}${t < now - STEP_MIN * 60000 ? ' · vorbei' : ''}`
+    : '🌙 Sonne unter dem Horizont';
   $('nowBtn').hidden = isNow;
-
-  const wx = weatherAt(t);
-  const cloudy = wx && wx.sunMin != null && wx.sunMin < CLOUDY_MIN;
-  const wEl = $('weather');
+  const wx = weatherAt(state.weather, t);
+  const cloudy = isCloudy(wx);
+  const wp = $('weatherPill');
+  wp.hidden = !wx;
   if (wx) {
-    const sm = wx.sunMin != null ? ` · Sonnenschein in dieser Stunde ca. ${Math.round(wx.sunMin)} min` : '';
-    wEl.textContent = `${cloudy ? '☁️ Wahrscheinlich bedeckt. ' : ''}Bewölkung ${Math.round(wx.cloud)} %${sm}`;
-    wEl.classList.toggle('cloudy', !!cloudy);
-  } else {
-    wEl.textContent = state.weather ? 'Für diese Zeit gibt es keine Wettervorhersage.' : 'Wetter gerade nicht verfügbar. Gezeigt wird die Sonne bei klarem Himmel.';
-    wEl.classList.remove('cloudy');
+    const ico = cloudy ? (wx.cloud > 85 ? '☁️' : '⛅') : wx.cloud > 40 ? '🌤️' : '☀️';
+    wp.textContent = `${ico} ${wx.temp != null ? Math.round(wx.temp) + '°' : Math.round(wx.cloud) + ' %'}`;
+    wp.title = `Bewölkung ${Math.round(wx.cloud)} %${wx.sunMin != null ? `, ca. ${Math.round(wx.sunMin)} min Sonnenschein in dieser Stunde` : ''}`;
+    wp.classList.toggle('cloudy', cloudy);
   }
+  state.cloudy = cloudy;
 
-  const rows = state.cafes.filter((c) => visible(c, day, i));
+  const rows = state.area.cafes.filter((c) => passes(c, d, i) || c.id === state.selected);
   const rank = (c) => {
-    const pc = day.perCafe[c._i];
-    const v = pc.sun[i], closed = pc.open[i] === 0;
-    if (closed) return 4;
+    const pc = d.perCafe[c._i];
+    const v = pc.sun[i];
+    if (pc.open[i] === 0) return 5;
     if (v >= SUNNY) return 0;
     if (v > 0) return 1;
     for (let j = i + 1; j < pc.sun.length; j++) if (pc.sun[j] >= SUNNY) return 2 + j / 1000;
-    return 3;
+    return 4;
   };
   rows.sort((a, b) => rank(a) - rank(b) || a.dist - b.dist);
-
   state.rows = rows;
-  state.cloudy = cloudy;
-  if (state.view === 'list') renderList();
-  else renderMap();
+
+  renderMap(d, i);
+  if (state.selected) renderDetail(d, i);
+  else renderList(d, i, rows);
 }
 
-function cardFor(c, day, i, cloudy) {
-  const t = day.steps[i];
-  const tpl = $('cardTpl').content;
-  const pct = (j) => (j / (day.steps.length - 1)) * 100;
-  const pc = day.perCafe[c._i];
-  const el = tpl.cloneNode(true).firstElementChild;
-  el.dataset.id = c.id;
-  const a = el.querySelector('.name');
-  a.textContent = c.name;
-  a.href = `https://maps.apple.com/?q=${encodeURIComponent(c.name)}&ll=${c.lat},${c.lon}`;
-  el.querySelector('.dist').textContent = c.dist < 1000 ? `${Math.round(c.dist / 10) * 10} m` : `${(c.dist / 1000).toFixed(1)} km`;
-
-  const sd = sunDescription(pc.sun, day.steps, i, day);
-  const od = openDescription(c, t, pc.open[i]);
-  const chips = el.querySelector('.chips');
-  const sunChip = chip(`${sd.label}${sd.sub ? ' · ' + sd.sub : ''}`, 'c-' + sd.cls + (cloudy && sd.cls === 'sun' ? ' muted' : ''));
-  if (cloudy && sd.cls === 'sun') sunChip.title = 'Der Platz liegt frei, aber es ist wahrscheinlich bewölkt.';
-  chips.append(sunChip, chip(od.label, 'c-' + od.cls));
-  el.classList.add('is-' + sd.cls);
-  if (pc.open[i] === 0) el.classList.add('is-closed');
-  if (c.id === state.selected) el.classList.add('selected');
-
-  // Tagesleiste: oben Sonne, unten Öffnungszeit
-  const stopsSun = [], stopsOpen = [];
-  for (let j = 0; j < day.steps.length; j++) {
-    const v = pc.sun[j];
-    const col = v < 0 ? 'var(--night)' : v >= SUNNY ? 'var(--sun)' : v > 0 ? 'var(--part)' : 'var(--shade)';
-    const oc = pc.open[j] === 1 ? 'var(--open)' : pc.open[j] === 0 ? 'var(--closed)' : 'transparent';
-    const a0 = pct(Math.max(0, j - 0.5)), a1 = pct(Math.min(day.steps.length - 1, j + 0.5));
-    stopsSun.push(`${col} ${a0}%`, `${col} ${a1}%`);
-    stopsOpen.push(`${oc} ${a0}%`, `${oc} ${a1}%`);
-  }
-  el.querySelector('.bar-sun').style.background = `linear-gradient(90deg, ${stopsSun.join(',')})`;
-  el.querySelector('.bar-open').style.background = `linear-gradient(90deg, ${stopsOpen.join(',')})`;
-  el.querySelector('.bar-now').style.left = `${pct(i)}%`;
-  const scale = el.querySelectorAll('.bar-scale span');
-  scale[0].textContent = `↑ ${hhmm(day.sunrise)}`;
-  scale[1].textContent = `${hhmm(day.sunset)} ↓`;
-
-  const meta = el.querySelector('.meta');
-  const total = sunMinutesOfDay(pc.sun);
-  const parts = [];
-  parts.push(total ? `${fmtDuration(total)} Sonne an diesem Tag` : 'an diesem Tag keine Sonne');
-  if (c.facadeDeg != null) parts.push(`Plätze vermutlich nach ${compass(c.facadeDeg)}`);
-  else parts.push('frei stehend');
-  parts.push(c.seating === 'yes' ? 'Außenplätze: ja' : c.seating === 'no' ? 'Außenplätze: nein' : 'Außenplätze: unbekannt');
-  if (c.kind === 'Eisdiele') parts.unshift('Eisdiele');
-  meta.textContent = parts.join(' · ') + ' · ';
-  const edit = document.createElement('a');
-  edit.href = `https://www.openstreetmap.org/edit?${c.osmType}=${c.osmId}`;
-  edit.target = '_blank'; edit.rel = 'noopener';
-  edit.textContent = 'in OSM bearbeiten';
-  meta.append(edit);
-  el.addEventListener('click', (e) => {
-    if (e.target.closest('a')) return;
-    selectCafe(c.id, true);
-  });
-  return el;
+function renderMap(d, i) {
+  const m = state.map;
+  if (!m?.map || !state.area) return;
+  const key = `${state.loadId}:${state.dayOffset}:${i}`;
+  if (key !== state.drawnKey) { m.drawSun(d.suns[i]); state.drawnKey = key; }
+  const visible = new Set(state.rows.map((c) => c.id));
+  m.setCafes(state.area.cafes.map((c) => {
+    const pc = d.perCafe[c._i];
+    return {
+      id: c.id, lat: c.lat, lon: c.lon, name: c.name, emoji: c.emoji,
+      cls: sunClass(pc.sun[i]), closed: pc.open[i] === 0, hidden: !visible.has(c.id),
+      samples: c.id === state.selected ? c.samples.map((p) => ({ lat: p.lat, lon: p.lon, lit: sampleLit(state.area, p, d.suns[i]) })) : [],
+    };
+  }), state.selected);
 }
 
-function renderList() {
-  const day = dayInfo(state.dayOffset);
-  const list = $('list');
+function headline(d, i, rows) {
+  const n = rows.filter((c) => d.perCafe[c._i].sun[i] >= SUNNY && d.perCafe[c._i].open[i] !== 0).length;
+  const sun = d.suns[i];
+  if (sun.altDeg <= 0.5) return { title: '🌙 Nachtschicht', sub: 'Die Sonne schläft. Schieb den Regler oder wähl einen anderen Tag.' };
+  if (!state.area.cafes.length) return { title: '🤷 Hier gibt es keine Cafés', sub: 'Probier einen größeren Umkreis oder einen anderen Ort.' };
+  const best = bestStep(d), bn = sunnyCount(d, best);
+  const tip = bn && best !== i ? ` Die meisten (${bn}) gibt es um ${hhmm(d.steps[best])}.` : '';
+  if (state.cloudy && n) return { title: `⛅ ${n} ${n === 1 ? 'Platz wäre' : 'Plätze wären'} sonnig`, sub: 'Laut Vorhersage ist es aber bewölkt.' + tip };
+  if (n) return { title: `☀️ ${n} ${n === 1 ? 'Sonnenplatz' : 'Sonnenplätze'} offen`, sub: (n > 3 ? 'Nichts wie raus!' : 'Schnell sein lohnt sich.') + tip };
+  return { title: '😎 Gerade alles im Schatten', sub: bn ? `Um ${hhmm(d.steps[best])} liegen ${bn} Terrassen in der Sonne.` : 'An diesem Tag kommt laut Rechnung keine Terrasse in die Sonne.' };
+}
+
+function renderList(d, i, rows) {
+  const h = headline(d, i, rows);
+  $('listTitle').textContent = h.title;
+  $('listSub').textContent = h.sub;
   const frag = document.createDocumentFragment();
-  for (const c of state.rows) frag.append(cardFor(c, day, state.step, state.cloudy));
-  list.replaceChildren(frag);
-  if (!state.rows.length && state.cafes.length) {
+  for (const c of rows) frag.append(listItem(c, d, i));
+  if (!rows.length && state.area.cafes.length) {
     const li = document.createElement('li');
     li.className = 'empty';
-    li.textContent = 'Mit diesen Filtern bleibt nichts übrig.';
-    list.append(li);
+    li.innerHTML = '<svg class="mascot big"><use href="#mascot"/></svg><p>Mit diesen Filtern bleibt nichts übrig.</p>';
+    frag.append(li);
   }
+  $('list').replaceChildren(frag);
 }
 
-/* ---------- Karte ---------- */
+function dayBar(c, d, i) {
+  const pc = d.perCafe[c._i];
+  const n = d.steps.length;
+  const pct = (j) => (j / (n - 1)) * 100;
+  const stops = [], ostops = [];
+  for (let j = 0; j < n; j++) {
+    const v = pc.sun[j];
+    const col = v < 0 ? 'var(--night)' : v >= SUNNY ? 'var(--sun)' : v > 0 ? 'var(--part)' : 'var(--shade)';
+    const oc = pc.open[j] === 1 ? 'var(--open)' : pc.open[j] === 0 ? 'transparent' : 'transparent';
+    const a0 = pct(Math.max(0, j - 0.5)), a1 = pct(Math.min(n - 1, j + 0.5));
+    stops.push(`${col} ${a0}%`, `${col} ${a1}%`);
+    ostops.push(`${oc} ${a0}%`, `${oc} ${a1}%`);
+  }
+  return `<div class="daybar"><div class="daybar-sun" style="background:linear-gradient(90deg,${stops.join(',')})"></div><div class="daybar-open" style="background:linear-gradient(90deg,${ostops.join(',')})"></div><i style="left:${pct(i)}%"></i></div>`;
+}
+
+function listItem(c, d, i) {
+  const pc = d.perCafe[c._i];
+  const si = sunInfo(c, d, i);
+  const oi = openInfo(c, d.steps[i], pc.open[i]);
+  const r = rating(c.id);
+  const { score } = sunScore(c, d);
+  const li = document.createElement('li');
+  li.className = `item is-${si.cls}${pc.open[i] === 0 ? ' is-closed' : ''}`;
+  li.innerHTML = `
+    <button type="button" class="item-btn">
+      <span class="avatar av-${si.cls}">${c.emoji}${si.cls === 'sun' ? '<span class="av-badge">☀️</span>' : ''}</span>
+      <span class="item-main">
+        <span class="item-name">${esc(c.name)}</span>
+        <span class="item-line">${r?.stars ? `<b class="rate">${r.stars},0</b>${starsHtml(r.stars, 'small')} · ` : ''}<span class="suns" title="Sonnen-Note für den Tag">${'☀'.repeat(score)}<span class="off">${'☀'.repeat(5 - score)}</span></span> · ${c.dist < 1000 ? Math.round(c.dist / 10) * 10 + ' m' : (c.dist / 1000).toFixed(1) + ' km'}</span>
+        <span class="item-status"><span class="st st-${si.cls}${state.cloudy && si.cls === 'sun' ? ' cloudy' : ''}">${si.short}</span> · <span class="op op-${oi.cls}">${oi.short}</span></span>
+        ${dayBar(c, d, i)}
+      </span>
+    </button>`;
+  li.querySelector('.item-btn').onclick = () => select(c.id);
+  return li;
+}
+
+function sunChart(c, d, i) {
+  const pc = d.perCafe[c._i];
+  const n = d.steps.length;
+  const W = 340, H = 96, base = 78;
+  const maxAlt = Math.max(5, ...d.suns.map((s) => s.altDeg));
+  const x = (j) => (j / (n - 1)) * W;
+  const y = (alt) => base - Math.max(0, alt) / maxAlt * 62;
+  let bars = '';
+  for (let j = 0; j < n; j++) {
+    const v = pc.sun[j];
+    const col = v < 0 ? 'var(--night)' : v >= SUNNY ? 'var(--sun)' : v > 0 ? 'var(--part)' : 'var(--shade)';
+    const yy = y(d.suns[j].altDeg);
+    bars += `<rect x="${x(j) - W / n / 2}" y="${yy}" width="${W / n + 0.4}" height="${base - yy}" fill="${col}"/>`;
+    if (pc.open[j] === 1) bars += `<rect x="${x(j) - W / n / 2}" y="${base + 4}" width="${W / n + 0.4}" height="4" fill="var(--open)"/>`;
+  }
+  const curve = d.suns.map((s, j) => `${j ? 'L' : 'M'}${x(j).toFixed(1)},${y(s.altDeg).toFixed(1)}`).join('');
+  const labels = [0, Math.floor((n - 1) / 2), n - 1].map((j, k) =>
+    `<text x="${x(j)}" y="${H - 2}" text-anchor="${k === 0 ? 'start' : k === 2 ? 'end' : 'middle'}">${hhmm(d.steps[j])}</text>`).join('');
+  const sx = x(i), sy = y(d.suns[i].altDeg);
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Sonne und Schatten über den Tag">
+    ${bars}<path d="${curve}" fill="none" stroke="var(--ink)" stroke-opacity=".35" stroke-width="1.2"/>
+    <line x1="${sx}" x2="${sx}" y1="4" y2="${base + 8}" stroke="var(--ink)" stroke-width="1.5"/>
+    <circle cx="${sx}" cy="${sy}" r="5.5" fill="#fbbf24" stroke="#fff" stroke-width="2"/>
+    ${labels}</svg>`;
+}
+
+function renderDetail(d, i) {
+  const c = state.area.cafes.find((x) => x.id === state.selected);
+  if (!c) { state.selected = null; return render(); }
+  const pc = d.perCafe[c._i];
+  const t = d.steps[i];
+  const si = sunInfo(c, d, i);
+  const oi = openInfo(c, t, pc.open[i]);
+  const r = rating(c.id) || { stars: 0, tags: [], note: '' };
+  const { total, score } = sunScore(c, d);
+  const tg = c.tags;
+  const addr = [tg['addr:street'] && `${tg['addr:street']} ${tg['addr:housenumber'] || ''}`.trim(), tg['addr:postcode'] && `${tg['addr:postcode']} ${tg['addr:city'] || ''}`.trim()].filter(Boolean).join(', ');
+  const web = tg.website || tg['contact:website'];
+  const phone = tg.phone || tg['contact:phone'];
+  const heroEmoji = si.cls === 'sun' ? '<svg class="mascot hero-m"><use href="#mascot"/></svg>' : si.cls === 'night' ? '<span class="hero-e">🌙</span>' : si.cls === 'part' ? '<span class="hero-e">⛅</span>' : '<span class="hero-e">🌥️</span>';
+  const v = $('detailView');
+  v.innerHTML = `
+    <div class="d-head">
+      <button type="button" class="icon-btn" id="dBack" aria-label="Zurück zur Liste"><svg><use href="#i-back"/></svg></button>
+      <div class="d-title">
+        <h2>${esc(c.name)}</h2>
+        <div class="d-line">${r.stars ? `<b class="rate">${r.stars},0</b> ${starsHtml(r.stars, 'small')} <span class="muted">(deine)</span> · ` : ''}${c.kind} · ${c.dist < 1000 ? Math.round(c.dist / 10) * 10 + ' m' : (c.dist / 1000).toFixed(1) + ' km'}</div>
+        <div class="d-line"><span class="op op-${oi.cls}">${oi.short}</span></div>
+      </div>
+    </div>
+
+    <div class="hero hero-${si.cls}${state.cloudy && si.cls === 'sun' ? ' hero-cloudy' : ''}">
+      ${heroEmoji}
+      <div>
+        <div class="hero-big">${si.big}</div>
+        <div class="hero-sub">${si.sub}${state.cloudy && si.cls === 'sun' ? ' · aber wohl bewölkt ☁️' : ''}</div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <a class="act" href="https://maps.apple.com/?daddr=${c.lat},${c.lon}&q=${encodeURIComponent(c.name)}" target="_blank" rel="noopener"><span class="act-ico primary"><svg><use href="#i-route"/></svg></span>Route</a>
+      <button type="button" class="act" id="aRate"><span class="act-ico"><svg><use href="#i-star"/></svg></span>Bewerten</button>
+      <button type="button" class="act" id="aShare"><span class="act-ico"><svg><use href="#i-share"/></svg></span>Teilen</button>
+      <a class="act" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(c.name + ' ' + (tg['addr:street'] || '') + ' Hamburg')}" target="_blank" rel="noopener"><span class="act-ico"><svg><use href="#i-g"/></svg></span>Google</a>
+    </div>
+
+    <section class="d-sec">
+      <div class="d-sec-head"><h3>Sonne ${state.dayOffset === 0 ? 'heute' : state.dayOffset === 1 ? 'morgen' : 'am ' + fmtWeekday.format(t)}</h3>
+        <span class="suns big">${'☀'.repeat(score)}<span class="off">${'☀'.repeat(5 - score)}</span></span></div>
+      ${sunChart(c, d, i)}
+      <p class="muted small">${total ? `${fmtDur(total)} Sonne auf der Terrasse.` : 'Die Terrasse bekommt an diesem Tag keine Sonne.'} Der grüne Streifen zeigt, wann geöffnet ist.</p>
+    </section>
+
+    <ul class="info">
+      <li><span>🕐</span><div>${oi.short}${tg.opening_hours ? `<small>${esc(tg.opening_hours)}</small>` : ''}</div></li>
+      <li><span>🪑</span><div>${c.seating === 'yes' ? 'Hat Außenplätze' : c.seating === 'no' ? 'Keine Außenplätze laut OSM' : 'Außenplätze: unbekannt'}</div></li>
+      <li><span>🧭</span><div>${c.facadeDeg != null ? `Tische vermutlich auf der ${compass(c.facadeDeg)}-Seite` : 'Steht frei, Tische rundherum möglich'}<small>Die Punkte auf der Karte zeigen die vermutete Lage.</small></div></li>
+      ${addr ? `<li><span>📍</span><div>${esc(addr)}</div></li>` : ''}
+      ${web ? `<li><span>🌐</span><div><a href="${esc(web)}" target="_blank" rel="noopener">${esc(web.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))}</a></div></li>` : ''}
+      ${phone ? `<li><span>📞</span><div><a href="tel:${esc(phone.replace(/\s/g, ''))}">${esc(phone)}</a></div></li>` : ''}
+    </ul>
+
+    <section class="d-sec rate-sec" id="rateSec">
+      <h3>Deine Bewertung</h3>
+      <div class="rate-stars" role="radiogroup" aria-label="Sterne">
+        ${[1, 2, 3, 4, 5].map((k) => `<button type="button" data-star="${k}" class="${k <= r.stars ? 'on' : ''}" aria-label="${k} Sterne"><svg><use href="#i-star"/></svg></button>`).join('')}
+      </div>
+      <div class="rate-tags">${RATING_TAGS.map((tag) => `<button type="button" class="tag${r.tags.includes(tag) ? ' on' : ''}" data-tag="${esc(tag)}">${tag}</button>`).join('')}</div>
+      <textarea id="rateNote" rows="2" placeholder="Notiz für dich, z. B. „Ecktisch links hat am längsten Sonne“">${esc(r.note)}</textarea>
+      <p class="muted small">Bleibt nur auf deinem Gerät.</p>
+    </section>
+
+    <p class="muted small d-foot">Daten: OpenStreetMap · <a href="https://www.openstreetmap.org/edit?${c.osmType}=${c.osmId}" target="_blank" rel="noopener">Fehler? In OSM verbessern</a></p>`;
+
+  $('dBack').onclick = () => deselect();
+  $('aRate').onclick = () => { setSnap('full'); $('rateSec').scrollIntoView({ behavior: 'smooth' }); };
+  $('aShare').onclick = async () => {
+    const url = new URL(location.href);
+    url.search = '';
+    url.searchParams.set('lat', state.place.lat.toFixed(5));
+    url.searchParams.set('lon', state.place.lon.toFixed(5));
+    url.searchParams.set('name', state.place.label);
+    url.searchParams.set('cafe', c.id);
+    const text = `${c.name}: ${si.big} ☀️`;
+    try {
+      if (navigator.share) await navigator.share({ title: c.name, text, url: url.toString() });
+      else { await navigator.clipboard.writeText(`${text} ${url}`); toast('Link kopiert 📋'); }
+    } catch { /* abgebrochen */ }
+  };
+  v.querySelectorAll('[data-star]').forEach((b) => {
+    b.onclick = () => {
+      const k = +b.dataset.star;
+      const cur = rating(c.id)?.stars || 0;
+      saveRating(c.id, { stars: k === cur ? 0 : k });
+      if (k !== cur) toast(['', '😬 Notiert.', '🙂 Notiert.', '😊 Schön!', '😍 Super!', '🤩 Sonnenplatz-Legende!'][k]);
+      render();
+    };
+  });
+  v.querySelectorAll('[data-tag]').forEach((b) => {
+    b.onclick = () => {
+      const tags = new Set(rating(c.id)?.tags || []);
+      tags.has(b.dataset.tag) ? tags.delete(b.dataset.tag) : tags.add(b.dataset.tag);
+      saveRating(c.id, { tags: [...tags] });
+      b.classList.toggle('on');
+    };
+  });
+  $('rateNote').onchange = (e) => saveRating(c.id, { note: e.target.value.trim() });
+}
+
+function select(id) {
+  state.selected = id;
+  $('listView').hidden = true;
+  $('detailView').hidden = false;
+  $('sheetBody').scrollTop = 0;
+  updateUrl();
+  if (state.snap !== 'full') setSnap('half');
+  render();
+  const c = state.area?.cafes.find((x) => x.id === id);
+  if (c) state.map?.flyTo(c.lat, c.lon);
+}
+
+function deselect() {
+  state.selected = null;
+  updateUrl();
+  showList();
+  render();
+}
+
+function showList() {
+  $('listView').hidden = false;
+  $('detailView').hidden = true;
+}
+
+/* ================= Karte ================= */
 
 async function ensureMap() {
-  if (!state.map) {
-    state.map = new SunMap($('map'), { onSelect: (id) => selectCafe(id, false) });
-  }
+  if (!state.map) state.map = new SunMap($('map'), { onSelect: select, onBackgroundClick: () => { if (state.selected) deselect(); } });
   await state.map.init(state.place);
-  if (!state.areaSet && state.buildings) {
-    state.map.setArea({ place: state.place, proj: state.proj, buildings: state.buildings, radius: state.filters.radius, extent: state.extent });
-    state.areaSet = true;
-    state.drawnKey = null;
-  }
-  state.map.resize();
+  updateMapPadding();
 }
 
-function renderMap() {
-  const m = state.map;
-  const day = dayInfo(state.dayOffset);
-  const i = state.step;
-  if (m && m.map && state.areaSet) {
-    const key = state.dayOffset + ':' + i + ':' + state.loadId;
-    if (key !== state.drawnKey) { m.drawSun(day.suns[i]); state.drawnKey = key; }
-    const items = state.rows.map((c) => {
-      const pc = day.perCafe[c._i];
-      const v = pc.sun[i];
-      const cls = v < 0 ? 'night' : v >= SUNNY ? 'sun' : v > 0 ? 'part' : 'shade';
-      const samples = c.id === state.selected ? c.samples.map((p) => {
-        const [la, lo] = state.proj.toLatLon(p.x, p.y);
-        const s = day.suns[i];
-        const lit = s.altDeg > 0.5 && !state.index.isShaded(p.x, p.y, s.dx, s.dy, s.tanAlt, 1.2, p.ex);
-        return { lat: la, lon: lo, lit };
-      }) : [];
-      return { id: c.id, lat: c.lat, lon: c.lon, name: c.name, cls, closed: pc.open[i] === 0, samples };
-    });
-    m.setCafes(items, state.selected);
-  }
-  const box = $('mapCard');
-  const sel = state.rows.find((c) => c.id === state.selected);
-  if (sel) box.replaceChildren(cardFor(sel, day, i, state.cloudy));
-  else {
-    const li = document.createElement('li');
-    li.className = 'hint';
-    const n = state.rows.filter((c) => day.perCafe[c._i].sun[i] >= SUNNY && day.perCafe[c._i].open[i] !== 0).length;
-    li.textContent = state.cafes.length
-      ? `${n === 1 ? 'Ein Café liegt' : n + ' Cafés liegen'} gerade in der Sonne. Tippe auf einen Punkt für Details.`
-      : '';
-    box.replaceChildren(li);
-  }
+/* ================= Bottom-Sheet ================= */
+
+function snapHeights() {
+  const H = window.innerHeight;
+  const tb = $('timebox');
+  const peek = Math.min(H * 0.5, $('grab').offsetHeight + tb.offsetHeight + 104);
+  return { peek, half: Math.max(peek, Math.round(H * 0.56)), full: H - 72 - (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sat')) || 0) };
 }
 
-function selectCafe(id, fromList) {
-  state.selected = id;
-  const c = state.cafes.find((x) => x.id === id);
-  if (fromList) showView('map');
-  else render();
-  if (c && state.map) state.map.flyTo(c.lat, c.lon);
+function setSnap(snap, animate = true) {
+  state.snap = snap;
+  const h = snapHeights()[snap];
+  const s = $('sheet');
+  s.classList.toggle('anim', animate);
+  s.dataset.snap = snap;
+  s.style.height = h + 'px';
+  updateMapPadding(h);
 }
 
-async function showView(view) {
-  state.view = view;
-  store.set('view', view);
-  document.querySelectorAll('[data-view]').forEach((b) => {
-    const on = b.dataset.view === view;
-    b.classList.toggle('active', on);
-    b.setAttribute('aria-selected', on);
-  });
-  $('mapView').hidden = view !== 'map';
-  $('list').hidden = view !== 'list';
-  if (view === 'map' && state.place) {
-    try { await ensureMap(); } catch (e) { console.error(e); }
-  }
-  if (state.cafes.length || state.rows) render();
+function updateMapPadding(h) {
+  const sheetH = h ?? $('sheet').offsetHeight;
+  document.documentElement.style.setProperty('--sheet-h', sheetH + 'px');
+  state.map?.setPadding(Math.min(sheetH, window.innerHeight * 0.6), 110);
 }
 
-function chip(text, cls) {
-  const s = document.createElement('span');
-  s.className = 'chip ' + cls;
-  s.textContent = text;
-  return s;
+function bindSheet() {
+  const s = $('sheet');
+  let startY = 0, startH = 0, dragging = false, moved = false;
+  const down = (e) => {
+    if (e.target.closest('input, .days, button:not(.grab-able)') && !e.target.closest('#grab')) return;
+    dragging = true; moved = false;
+    startY = e.clientY; startH = s.offsetHeight;
+    s.classList.remove('anim');
+    s.setPointerCapture?.(e.pointerId);
+  };
+  const move = (e) => {
+    if (!dragging) return;
+    const dy = startY - e.clientY;
+    if (Math.abs(dy) > 4) moved = true;
+    const { peek, full } = snapHeights();
+    const h = Math.max(peek * 0.8, Math.min(full, startH + dy));
+    s.style.height = h + 'px';
+    document.documentElement.style.setProperty('--sheet-h', h + 'px');
+  };
+  const up = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    const hs = snapHeights();
+    const h = s.offsetHeight;
+    if (!moved) { // Tippen auf den Griff: eine Stufe weiter
+      setSnap(state.snap === 'peek' ? 'half' : state.snap === 'half' ? 'full' : 'peek');
+      return;
+    }
+    const v = startY - e.clientY;
+    let snap = Object.entries(hs).reduce((a, b) => (Math.abs(b[1] - h) < Math.abs(a[1] - h) ? b : a))[0];
+    if (Math.abs(v) > 60) { // Wischen bevorzugt die Richtung
+      const order = ['peek', 'half', 'full'];
+      const cur = order.indexOf(state.snap);
+      snap = order[Math.max(0, Math.min(2, cur + (v > 0 ? 1 : -1)))];
+      if (Math.abs(v) > 260) snap = v > 0 ? 'full' : 'peek';
+    }
+    setSnap(snap);
+  };
+  for (const el of [$('grab'), $('timebox').querySelector('.time-head')]) el.addEventListener('pointerdown', down);
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+  window.addEventListener('pointercancel', up);
+  // Liste ganz oben + weiter nach unten ziehen = Sheet verkleinern
+  const body = $('sheetBody');
+  let ty = null;
+  body.addEventListener('touchstart', (e) => { ty = body.scrollTop <= 0 ? e.touches[0].clientY : null; }, { passive: true });
+  body.addEventListener('touchmove', (e) => {
+    if (ty == null) return;
+    const dy = e.touches[0].clientY - ty;
+    if (dy > 70 && state.snap !== 'peek') { ty = null; setSnap(state.snap === 'full' ? 'half' : 'peek'); }
+  }, { passive: true });
+  body.addEventListener('scroll', () => { if (body.scrollTop > 20 && state.snap === 'peek') setSnap('half'); }, { passive: true });
 }
 
-/* ---------- Suche ---------- */
+/* ================= Suche ================= */
 
-async function search(q) {
+function openSearch() {
+  $('search').hidden = false;
+  requestAnimationFrame(() => $('search').classList.add('open'));
+  setTimeout(() => $('searchInput').focus(), 50);
+}
+function closeSearch() {
+  $('search').classList.remove('open');
+  setTimeout(() => { $('search').hidden = true; }, 180);
+}
+
+async function runSearch(q) {
   const ul = $('searchResults');
-  ul.replaceChildren();
-  const li0 = document.createElement('li'); li0.textContent = 'Suche …'; ul.append(li0);
+  ul.innerHTML = '<li class="muted">Suche …</li>';
   try {
-    const u = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&countrycodes=de&accept-language=de'
-      + '&viewbox=9.70,53.75,10.35,53.39&q=' + encodeURIComponent(q);
-    const r = await fetch(u);
-    const j = await r.json();
+    const res = await searchPlaces(q);
     ul.replaceChildren();
-    if (!j.length) { const li = document.createElement('li'); li.textContent = 'Nichts gefunden.'; ul.append(li); return; }
-    for (const p of j) {
+    if (!res.length) { ul.innerHTML = '<li class="muted">Nichts gefunden 🤔</li>'; return; }
+    for (const p of res) {
       const li = document.createElement('li');
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = p.display_name.split(',').slice(0, 3).join(',');
-      b.onclick = () => setPlace({ lat: +p.lat, lon: +p.lon, label: p.display_name.split(',')[0], source: 'search' });
-      li.append(b); ul.append(li);
+      li.innerHTML = `<button type="button" class="search-row"><span class="sr-ico">📍</span><span><b>${esc(p.label)}</b><small>${esc(p.detail)}</small></span></button>`;
+      li.firstChild.onclick = () => setPlace({ ...p, source: 'search' });
+      ul.append(li);
     }
   } catch {
-    ul.replaceChildren();
-    const li = document.createElement('li'); li.textContent = 'Suche gerade nicht erreichbar.'; ul.append(li);
+    ul.innerHTML = '<li class="muted">Suche gerade nicht erreichbar.</li>';
   }
 }
 
-/* ---------- Start ---------- */
+/* ================= Kleinkram ================= */
+
+let toastTimer;
+function toast(text, ms = 2200) {
+  const el = $('toast');
+  el.textContent = text;
+  el.hidden = false;
+  requestAnimationFrame(() => el.classList.add('show'));
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.classList.remove('show'); setTimeout(() => { el.hidden = true; }, 250); }, ms);
+}
+
+function syncChips() {
+  document.querySelectorAll('[data-filter]').forEach((b) => {
+    const on = !!state.filters[b.dataset.filter];
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on);
+  });
+  $('radiusChip').textContent = `📏 ${state.radius} m`;
+}
 
 function bind() {
-  $('locBtn').onclick = () => { const s = $('search'); s.hidden = !s.hidden; if (!s.hidden) $('searchInput').focus(); };
-  $('searchForm').onsubmit = (e) => { e.preventDefault(); const q = $('searchInput').value.trim(); if (q) search(q); };
-  document.querySelector('[data-gps]').onclick = () => { $('search').hidden = true; useGps(); };
+  $('searchBtn').onclick = openSearch;
+  $('searchClose').onclick = closeSearch;
+  $('searchForm').onsubmit = (e) => { e.preventDefault(); const q = $('searchInput').value.trim(); if (q) runSearch(q); };
+  document.querySelector('[data-gps]').onclick = useGps;
   document.querySelectorAll('[data-place]').forEach((b) => {
     b.onclick = () => { const [lat, lon, label] = b.dataset.place.split(','); setPlace({ lat: +lat, lon: +lon, label, source: 'preset' }); };
   });
-  $('time').oninput = (e) => { state.step = +e.target.value; render(); };
-  document.querySelectorAll('[data-view]').forEach((b) => { b.onclick = () => showView(b.dataset.view); });
-  $('btn3d').onclick = () => { const on = state.map?.toggle3d(); $('btn3d').setAttribute('aria-pressed', !!on); };
-  $('nowBtn').onclick = () => {
-    const day = dayInfo(0);
-    const now = new Date();
-    selectDay(now > day.sunset ? 1 : 0);
-  };
-  const f = state.filters;
-  $('fOpen').checked = f.open; $('fSun').checked = f.sun; $('fNoSeat').checked = f.noSeat; $('fRadius').value = String(f.radius);
-  const onFilter = () => {
-    const oldR = f.radius;
-    f.open = $('fOpen').checked; f.sun = $('fSun').checked; f.noSeat = $('fNoSeat').checked; f.radius = +$('fRadius').value;
-    store.set('filters', f);
-    if (f.radius !== oldR) { load(); return; }
-    if (state.cafes.length) { drawHisto(); render(); }
-  };
-  ['fOpen', 'fSun', 'fNoSeat', 'fRadius'].forEach((id) => $(id).addEventListener('change', onFilter));
-  window.addEventListener('resize', () => { if (state.cafes.length) drawHisto(); });
-  document.addEventListener('visibilitychange', () => {
-    // Nach längerer Pause wieder auf „jetzt“ springen
-    if (document.visibilityState === 'visible' && state.cafes.length && state.lastHidden && Date.now() - state.lastHidden > 15 * 60000) selectDay(0);
-    if (document.visibilityState === 'hidden') state.lastHidden = Date.now();
+  document.querySelectorAll('[data-filter]').forEach((b) => {
+    b.onclick = () => {
+      state.filters[b.dataset.filter] = !state.filters[b.dataset.filter];
+      store.set('filters2', state.filters);
+      syncChips();
+      if (state.area) { drawHisto(); render(); }
+    };
   });
+  $('radiusChip').onclick = () => {
+    const opts = [300, 500, 800];
+    state.radius = opts[(opts.indexOf(state.radius) + 1) % opts.length];
+    store.set('radius', state.radius);
+    syncChips();
+    toast(`Umkreis ${state.radius} m`);
+    if (state.place) setPlace(state.place);
+  };
+  $('time').addEventListener('input', (e) => { state.step = +e.target.value; render(); });
+  $('nowBtn').onclick = () => selectDay(new Date() > day(0).sunset ? 1 : 0);
+  $('btn3d').onclick = () => { const on = state.map?.toggle3d(); $('btn3d').setAttribute('aria-pressed', !!on); };
+  $('locateBtn').onclick = () => {
+    if (state.place?.source === 'gps') state.map?.recenter(state.place.lat, state.place.lon);
+    else useGps();
+  };
+  window.addEventListener('resize', () => { setSnap(state.snap || 'peek', false); drawHisto(); state.map?.resize(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') state.hiddenAt = Date.now();
+    else if (state.area && state.hiddenAt && Date.now() - state.hiddenAt > 15 * 60000) selectDay(0);
+  });
+  bindSheet();
 }
 
 bind();
-showView(state.view);
+syncChips();
+setSnap('peek', false);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 const fromUrl = placeFromUrl();
 if (fromUrl) setPlace(fromUrl); else useGps();
