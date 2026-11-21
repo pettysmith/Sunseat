@@ -36,10 +36,12 @@ export class SunLayer {
    * @param {string} tileUrl  Vorlage mit {z}/{x}/{y}
    * @param {{onStatus?:(s:string)=>void}} opts
    */
-  constructor(map, tileUrl, { beforeId, onStatus } = {}) {
+  constructor(map, tileUrl, { beforeId, onStatus, onTrees } = {}) {
     this.map = map;
     this.tileUrl = tileUrl;
     this.onStatus = onStatus || (() => {});
+    this.onTrees = onTrees || (() => {});
+    this.treeTiles = new Map(); // Kachel -> { trees | null (lädt) }
     this.tiles = new Map();     // "x/y" -> Promise<Building[]>
     this.sun = null;
     this.proj = null;
@@ -94,7 +96,10 @@ export class SunLayer {
       const tiles = await Promise.all(need.map((k) => this._tile(k)));
       buildings = tiles.flatMap((t) => t.buildings);
       water = tiles.flatMap((t) => t.water);
-      this._trees = tiles.flatMap((t) => t.trees);
+      // Bäume nur für den sichtbaren Bereich (+100 m); sie kommen später nach und lösen dann ein Neuzeichnen aus
+      const treeKeys = this._tilesFor(region, 100);
+      this._requestTrees(treeKeys);
+      this._trees = this.treesFor(treeKeys);
     } catch {
       this.onStatus('error');
       return;
@@ -124,8 +129,41 @@ export class SunLayer {
     return {
       buildings: tiles.flatMap((t) => t.buildings),
       pois: tiles.flatMap((t) => t.pois),
-      trees: tiles.flatMap((t) => t.trees),
     };
+  }
+
+  /** Bäume (Hamburger Baumkataster) nachladen, ohne auf sie zu warten; höchstens zwei Abfragen gleichzeitig. */
+  _requestTrees(keys) {
+    for (const k of keys) if (!this.treeTiles.has(k)) { this.treeTiles.set(k, null); (this._treeQueue ||= []).push(k); }
+    this._pumpTrees();
+  }
+
+  _pumpTrees() {
+    this._treeActive ||= 0;
+    while (this._treeActive < 2 && this._treeQueue?.length) {
+      const key = this._treeQueue.shift();
+      const [x, y] = key.split('/').map(Number);
+      const n = 2 ** Z;
+      this._treeActive++;
+      fetchTrees({ w: x2lon(x / n), e: x2lon((x + 1) / n), n: y2lat(y / n), s: y2lat((y + 1) / n) })
+        .then(async (raw) => {
+          if (!this.proj) await this._tile(key).catch(() => {}); // Projektion kommt mit der ersten Gebäudekachel
+          this.treeTiles.set(key, toLocal(raw, this.proj));
+          if (raw.length) { this.refresh(); this.onTrees(); }
+        })
+        .catch(() => this.treeTiles.set(key, []))
+        .finally(() => { this._treeActive--; this._pumpTrees(); });
+    }
+  }
+
+  /** Bereits geladene Bäume in diesen Kacheln (sofort, ohne zu warten). */
+  treesFor(keys) {
+    return keys.flatMap((k) => this.treeTiles.get(k) || []);
+  }
+
+  /** Anzahl geladener Baumkacheln (für Caches, die neu rechnen müssen, wenn Bäume dazukommen). */
+  treeVersion(keys) {
+    return keys.filter((k) => this.treeTiles.get(k)).length;
   }
 
   /** Sichtbare Kacheln (ohne Rand). */
@@ -150,11 +188,11 @@ export class SunLayer {
 
   _regionKey(r) { return [r.x0, r.y0, r.zoom].map((v) => v.toFixed(7)).join(','); }
 
-  _tilesFor(r) {
+  _tilesFor(r, padM = MAX_SHADOW_M) {
     // Gebäude südlich (bzw. in Sonnenrichtung) außerhalb des Ausschnitts werfen Schatten hinein
     const lat = y2lat((r.y0 + r.y1) / 2);
     const mPerUnit = 40075016.7 * Math.cos((lat * Math.PI) / 180);
-    const pad = MAX_SHADOW_M / mPerUnit;
+    const pad = padM / mPerUnit;
     const n = 2 ** Z;
     const keys = [];
     for (let x = Math.floor((r.x0 - pad) * n); x <= Math.floor((r.x1 + pad) * n); x++)
@@ -167,10 +205,8 @@ export class SunLayer {
       const p = (async () => {
         const [x, y] = key.split('/').map(Number);
         const url = this.tileUrl.replace('{z}', Z).replace('{x}', x).replace('{y}', y);
-        const n = 2 ** Z;
-        const treesP = fetchTrees({ w: x2lon(x / n), e: x2lon((x + 1) / n), n: y2lat(y / n), s: y2lat((y + 1) / n) });
         const r = await fetch(url);
-        if (r.status === 204 || r.status === 404) return { buildings: [], water: [], pois: [], trees: [] };
+        if (r.status === 204 || r.status === 404) return { buildings: [], water: [], pois: [] };
         if (!r.ok) throw new Error('Kachel ' + r.status);
         const vt = new VectorTile(new Pbf(new Uint8Array(await r.arrayBuffer())));
         const layer = vt.layers.building;
@@ -219,7 +255,7 @@ export class SunLayer {
             out.push({ outer: [rings[0]], inner: rings.slice(1), h, minH });
           }
         }
-        return { buildings: out, water, pois, trees: toLocal(await treesP, this.proj) };
+        return { buildings: out, water, pois };
       })();
       p.catch(() => this.tiles.delete(key)); // bei Fehler später erneut versuchen
       this.tiles.set(key, p);

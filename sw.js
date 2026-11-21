@@ -1,5 +1,5 @@
 // Sunseat Service Worker: App-Dateien offline vorhalten, alles andere aus dem Netz.
-const VERSION = 'sunseat-v7';
+const VERSION = 'sunseat-v8';
 const SHELL = [
   './', 'index.html', 'style.css', 'app.js', 'shadow.js', 'sunlayer.js', 'places.js', 'trees.js', 'lod2.js', 'manifest.webmanifest',
   'vendor/suncalc.js', 'vendor/opening_hours.js', 'vendor/maplibre-gl.js', 'vendor/maplibre-gl.css', 'vendor/vector-tile.js',

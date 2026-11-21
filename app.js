@@ -52,7 +52,7 @@ map.on('load', async () => {
   const firstLabel = map.getStyle().layers.find((l) => l.type === 'symbol')?.id;
   let tileUrl;
   try { tileUrl = (await (await fetch(TILES)).json()).tiles[0]; } catch { notice('Kartendaten nicht erreichbar'); return; }
-  layer = new SunLayer(map, tileUrl, { beforeId: firstLabel, onStatus });
+  layer = new SunLayer(map, tileUrl, { beforeId: firstLabel, onStatus, onTrees: () => { clearTimeout(state.treeTimer); state.treeTimer = setTimeout(refreshPlaces, 400); } });
   places = new Places(layer);
   addPlaceLayers();
   document.querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show');

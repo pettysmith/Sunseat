@@ -119,10 +119,13 @@ export class Places {
   async prepare(places) {
     const keys = new Set();
     for (const p of places) for (const k of this.sl.tilesAround(p.lat, p.lon)) keys.add(k);
-    const key = [...keys].sort().join(',');
+    const list = [...keys].sort();
+    // Bäume kommen später nach: dann neu rechnen (Schlüssel enthält die Zahl geladener Baumkacheln)
+    const key = list.join(',') + '#' + this.sl.treeVersion(list);
     if (this.index?.key !== key) {
-      const { buildings, trees } = await this.sl.load([...keys]);
-      this.index = { key, index: new ShadowIndex(buildings), trees: new TreeIndex(trees) };
+      const { buildings } = await this.sl.load(list);
+      const old = this.index?.key?.split('#')[0] === list.join(',') ? this.index.index : null;
+      this.index = { key, index: old || new ShadowIndex(buildings), trees: new TreeIndex(this.sl.treesFor(list)) };
     }
     return this.index;
   }
@@ -191,7 +194,9 @@ export async function preciseContext(places, place, signal) {
   const b = { w: place.lon - dLon, e: place.lon + dLon, s: place.lat - dLat, n: place.lat + dLat };
   if (!inHamburg(b)) return null;
   const sl = places.sl;
-  const { buildings, trees } = await sl.load(sl.tilesAround(place.lat, place.lon));
+  const around = sl.tilesAround(place.lat, place.lon);
+  const { buildings } = await sl.load(around);
+  const trees = sl.treesFor(around);
   const lodBuildings = await fetchLod2(b, sl.proj, signal);
   if (!lodBuildings.length) return null;
   const lod = new Lod2Index(lodBuildings);
