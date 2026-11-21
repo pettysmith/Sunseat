@@ -14,6 +14,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="vendor/maplibre-gl.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -59,6 +60,25 @@
 
   <main>
     <p id="status" class="status">Lade …</p>
+    <div class="views" role="tablist" aria-label="Ansicht">
+      <button type="button" role="tab" data-view="map">Karte</button>
+      <button type="button" role="tab" data-view="list">Liste</button>
+    </div>
+    <section id="mapView" class="map-view" hidden>
+      <div class="map-wrap">
+        <div id="map" class="map"></div>
+        <button id="btn3d" type="button" class="btn3d" aria-pressed="false">3D</button>
+        <div class="legend" aria-label="Legende">
+          <span><i class="lg-sunarea"></i>Sonne</span>
+          <span><i class="lg-shadearea"></i>Schatten</span>
+          <span><i class="dot" style="background:#f2a51a"></i>Café in der Sonne</span>
+          <span><i class="dot" style="background:#f5d58a"></i>halb</span>
+          <span><i class="dot" style="background:#6f8193"></i>Schatten</span>
+          <span><i class="dot" style="background:#b0a89c"></i>zu</span>
+        </div>
+      </div>
+      <ol id="mapCard" class="list map-card"></ol>
+    </section>
     <div class="filters">
       <label><input type="checkbox" id="fOpen"> nur geöffnet</label>
       <label><input type="checkbox" id="fSun"> nur Sonne</label>
@@ -71,11 +91,12 @@
         </select>
       </label>
     </div>
-    <ol id="list" class="list"></ol>
+    <ol id="list" class="list" hidden></ol>
 
     <details class="about">
       <summary>Wie das funktioniert · Quellen · Grenzen</summary>
       <h3>Wie das funktioniert</h3>
+      <p>Auf der Karte ist gelb, wo zur gewählten Zeit Sonne auf den Boden fällt, und blau, wo Gebäude Schatten werfen. Die farbigen Punkte sind die Cafés. Tippst du eins an, siehst du als kleine Punkte, wo die Außenplätze vermutet werden.</p>
       <p>Für jedes Café wird geschätzt, wo die Außenplätze sind: an der nächsten Fassade des Gebäudes, in dem das Café liegt, 3&nbsp;m davor, an drei Punkten nebeneinander. Von dort wird für jeden Zeitpunkt ein Strahl Richtung Sonne geschickt. Trifft er ein Gebäude, das höher ist als der Strahl an dieser Stelle, liegt der Punkt im Schatten. Liegen alle drei Punkte in der Sonne, heißt es „Sonne“, sonst „Halbschatten“ oder „Schatten“.</p>
       <h3>Grenzen</h3>
       <ul>
@@ -91,6 +112,8 @@
         <li>Bewölkung und Sonnenscheindauer: <a href="https://open-meteo.com/">Open-Meteo</a>, CC BY 4.0</li>
         <li>Ortssuche: <a href="https://nominatim.org/">Nominatim</a> (OpenStreetMap)</li>
         <li>Sonnenstand: <a href="https://github.com/mourner/suncalc">SunCalc</a>, BSD-2-Clause</li>
+        <li>Grundkarte: <a href="https://openfreemap.org/">OpenFreeMap</a>, © OpenMapTiles, Daten © OpenStreetMap-Mitwirkende</li>
+        <li>Kartendarstellung: <a href="https://maplibre.org/">MapLibre GL JS</a>, BSD-3-Clause</li>
         <li>Öffnungszeiten auswerten: <a href="https://github.com/opening-hours/opening_hours.js">opening_hours.js</a>, LGPL-3.0</li>
       </ul>
       <p class="fine">Fehlende Daten kannst du selbst in OpenStreetMap eintragen; jedes Café hat dafür einen Link „in OSM bearbeiten“.</p>
@@ -112,6 +135,7 @@
 
   <script src="vendor/suncalc.js"></script>
   <script src="vendor/opening_hours.js"></script>
+  <script src="vendor/maplibre-gl.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

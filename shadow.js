@@ -290,3 +290,35 @@ export function compass(deg) {
   const n = ['N', 'NNO', 'NO', 'ONO', 'O', 'OSO', 'SO', 'SSO', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
   return n[Math.round(deg / 22.5) % 16];
 }
+
+/**
+ * Schattenflächen aller Gebäude für einen Sonnenstand, als Liste von Polygonen
+ * (lokale Meter, alle gegen den Uhrzeigersinn, damit sie sich beim Füllen vereinigen).
+ * Pro Kante ein Viereck aus Kante und ihrem Schatten, dazu der Grundriss.
+ */
+export function shadowShapes(buildings, sun, maxLen = 600) {
+  const out = [];
+  if (sun.altDeg <= 0.5) return out;
+  const orient = (poly) => {
+    let a = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const [x1, y1] = poly[i], [x2, y2] = poly[(i + 1) % poly.length];
+      a += x1 * y2 - x2 * y1;
+    }
+    return a < 0 ? poly.reverse() : poly;
+  };
+  for (const b of buildings) {
+    const L = Math.min(maxLen, (b.h - (b.minH || 0) > 0 ? b.h : 0) / sun.tanAlt);
+    if (!(L > 0.2)) continue;
+    const ox = -sun.dx * L, oy = -sun.dy * L;
+    for (const ring of b.outer) {
+      out.push(orient(ring.slice(0, -1).map((p) => [p[0], p[1]])));
+      for (let i = 0; i < ring.length - 1; i++) {
+        const [x1, y1] = ring[i], [x2, y2] = ring[i + 1];
+        if (x1 === x2 && y1 === y2) continue;
+        out.push(orient([[x1, y1], [x2, y2], [x2 + ox, y2 + oy], [x1 + ox, y1 + oy]]));
+      }
+    }
+  }
+  return out;
+}

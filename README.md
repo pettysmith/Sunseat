@@ -2,7 +2,7 @@
 
 Welche Café-Terrasse in deiner Nähe liegt gerade in der Sonne? Sunseat ist eine Web-App für den Homescreen (iPhone und Android). Sie läuft ohne Server, Konto oder API-Schlüssel.
 
-## Was die App kann (Stufe 1)
+## Was die App kann (Stufe 1 und 2)
 
 - Standort per GPS, Ortssuche oder Schnellwahl (Schanze, Ottensen, Eppendorf, Innenstadt, Uhlenhorst)
 - Cafés und Eisdielen im Umkreis von 300, 500 oder 800 m aus OpenStreetMap
@@ -11,6 +11,7 @@ Welche Café-Terrasse in deiner Nähe liegt gerade in der Sonne? Sunseat ist ein
 - Zeitregler für heute und die nächsten sechs Tage. Das Balkendiagramm über dem Regler zeigt, wie viele geöffnete Terrassen zu jeder Zeit in der Sonne liegen.
 - Bewölkung und Sonnenscheindauer aus Open-Meteo. Ist es bewölkt, wird „Sonne“ als „bewölkt“ markiert.
 - Eine Tagesleiste pro Café: oben Sonne und Schatten, unten die Öffnungszeit
+- **Karte:** Gelbe Flächen bekommen zur gewählten Zeit Sonne, blaue liegen im Schatten. Die Cafés sind Punkte in der Farbe ihres Zustands. Tippst du ein Café an, zeigen kleine Punkte, wo die Sitzplätze vermutet werden und ob dort gerade Sonne ist. Mit dem Knopf „3D“ werden die Gebäude in der angenommenen Höhe angezeigt.
 - Funktioniert nach dem ersten Laden auch offline (nur die App selbst, nicht die Daten)
 
 ## Wie gerechnet wird
@@ -36,12 +37,13 @@ Standort per GPS geht nur über HTTPS, also über GitHub Pages, nicht über eine
 
 ## Nächste Stufen
 
-2. Karte (MapLibre) mit Schattenflächen
 3. Hamburger 3D-Stadtmodell (LoD2) und Straßenbäume statt OSM-Höhen
 4. Favoriten, „noch X Minuten Sonne“, Feinschliff
 
 ## Quellen und Lizenzen
 
 - Daten: © OpenStreetMap-Mitwirkende (ODbL), Open-Meteo (CC BY 4.0), Nominatim
+- Grundkarte: OpenFreeMap (© OpenMapTiles, © OpenStreetMap-Mitwirkende). Ist sie nicht erreichbar, zeigt die Karte nur die eigenen Gebäude und Schatten.
+- `vendor/maplibre-gl.js`: MapLibre GL JS 5.24.1, BSD-3-Clause (`vendor/LICENSE-maplibre.txt`)
 - `vendor/suncalc.js`: SunCalc 1.9.0, BSD-2-Clause (`vendor/LICENSE-suncalc.txt`)
 - `vendor/opening_hours.js`: opening_hours.js 3.16.0, unverändert, LGPL-3.0 (`vendor/LICENSE-opening_hours-LGPL-3.0.txt`). Quellcode: https://github.com/opening-hours/opening_hours.js

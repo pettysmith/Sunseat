@@ -1,6 +1,7 @@
 import {
   makeProjection, ShadowIndex, buildingsFromOverpass, terraceSamples, sunVector, compass,
 } from './shadow.js';
+import { SunMap } from './map.js';
 
 /* global SunCalc, opening_hours */
 
@@ -35,6 +36,10 @@ const state = {
   days: new Map(),     // dayOffset -> Tagesverlauf
   filters: store.get('filters', { open: false, sun: false, noSeat: true, radius: 500 }),
   loadId: 0,
+  view: store.get('view', 'map'),
+  selected: null,
+  map: null,
+  drawnKey: null,
 };
 
 /* ---------- Ort ---------- */
@@ -224,6 +229,12 @@ async function load() {
   }
   cafes.forEach((c, k) => { c._i = k; });
   state.cafes = cafes;
+  state.proj = proj;
+  state.buildings = buildings;
+  state.extent = state.filters.radius + 250;
+  state.selected = null;
+  state.drawnKey = null;
+  state.areaSet = false;
   state.index = index;
   state.estimatedShare = buildings.length ? buildings.filter((b) => b.estimated).length / buildings.length : 0;
   state.weather = await weatherP;
@@ -239,6 +250,7 @@ async function load() {
   } else state.dayOffset = 0;
   selectDay(state.dayOffset, true);
   setStatus(note + summaryText(), !!state.place.note);
+  if (state.view === 'map') showView('map');
 }
 
 /* ---------- Tagesverlauf ---------- */
@@ -492,67 +504,158 @@ function render() {
   };
   rows.sort((a, b) => rank(a) - rank(b) || a.dist - b.dist);
 
-  const list = $('list');
+  state.rows = rows;
+  state.cloudy = cloudy;
+  if (state.view === 'list') renderList();
+  else renderMap();
+}
+
+function cardFor(c, day, i, cloudy) {
+  const t = day.steps[i];
   const tpl = $('cardTpl').content;
-  const frag = document.createDocumentFragment();
   const pct = (j) => (j / (day.steps.length - 1)) * 100;
-  for (const c of rows) {
-    const pc = day.perCafe[c._i];
-    const el = tpl.cloneNode(true).firstElementChild;
-    const a = el.querySelector('.name');
-    a.textContent = c.name;
-    a.href = `https://maps.apple.com/?q=${encodeURIComponent(c.name)}&ll=${c.lat},${c.lon}`;
-    el.querySelector('.dist').textContent = c.dist < 1000 ? `${Math.round(c.dist / 10) * 10} m` : `${(c.dist / 1000).toFixed(1)} km`;
+  const pc = day.perCafe[c._i];
+  const el = tpl.cloneNode(true).firstElementChild;
+  el.dataset.id = c.id;
+  const a = el.querySelector('.name');
+  a.textContent = c.name;
+  a.href = `https://maps.apple.com/?q=${encodeURIComponent(c.name)}&ll=${c.lat},${c.lon}`;
+  el.querySelector('.dist').textContent = c.dist < 1000 ? `${Math.round(c.dist / 10) * 10} m` : `${(c.dist / 1000).toFixed(1)} km`;
 
-    const sd = sunDescription(pc.sun, day.steps, i, day);
-    const od = openDescription(c, t, pc.open[i]);
-    const chips = el.querySelector('.chips');
-    const sunChip = chip(`${sd.label}${sd.sub ? ' · ' + sd.sub : ''}`, 'c-' + sd.cls + (cloudy && sd.cls === 'sun' ? ' muted' : ''));
-    if (cloudy && sd.cls === 'sun') sunChip.title = 'Der Platz liegt frei, aber es ist wahrscheinlich bewölkt.';
-    chips.append(sunChip, chip(od.label, 'c-' + od.cls));
-    el.classList.add('is-' + sd.cls);
-    if (pc.open[i] === 0) el.classList.add('is-closed');
+  const sd = sunDescription(pc.sun, day.steps, i, day);
+  const od = openDescription(c, t, pc.open[i]);
+  const chips = el.querySelector('.chips');
+  const sunChip = chip(`${sd.label}${sd.sub ? ' · ' + sd.sub : ''}`, 'c-' + sd.cls + (cloudy && sd.cls === 'sun' ? ' muted' : ''));
+  if (cloudy && sd.cls === 'sun') sunChip.title = 'Der Platz liegt frei, aber es ist wahrscheinlich bewölkt.';
+  chips.append(sunChip, chip(od.label, 'c-' + od.cls));
+  el.classList.add('is-' + sd.cls);
+  if (pc.open[i] === 0) el.classList.add('is-closed');
+  if (c.id === state.selected) el.classList.add('selected');
 
-    // Tagesleiste: oben Sonne, unten Öffnungszeit
-    const stopsSun = [], stopsOpen = [];
-    for (let j = 0; j < day.steps.length; j++) {
-      const v = pc.sun[j];
-      const col = v < 0 ? 'var(--night)' : v >= SUNNY ? 'var(--sun)' : v > 0 ? 'var(--part)' : 'var(--shade)';
-      const oc = pc.open[j] === 1 ? 'var(--open)' : pc.open[j] === 0 ? 'var(--closed)' : 'transparent';
-      const a0 = pct(Math.max(0, j - 0.5)), a1 = pct(Math.min(day.steps.length - 1, j + 0.5));
-      stopsSun.push(`${col} ${a0}%`, `${col} ${a1}%`);
-      stopsOpen.push(`${oc} ${a0}%`, `${oc} ${a1}%`);
-    }
-    el.querySelector('.bar-sun').style.background = `linear-gradient(90deg, ${stopsSun.join(',')})`;
-    el.querySelector('.bar-open').style.background = `linear-gradient(90deg, ${stopsOpen.join(',')})`;
-    el.querySelector('.bar-now').style.left = `${pct(i)}%`;
-    const scale = el.querySelectorAll('.bar-scale span');
-    scale[0].textContent = `↑ ${hhmm(day.sunrise)}`;
-    scale[1].textContent = `${hhmm(day.sunset)} ↓`;
-
-    const meta = el.querySelector('.meta');
-    const total = sunMinutesOfDay(pc.sun);
-    const parts = [];
-    parts.push(total ? `${fmtDuration(total)} Sonne an diesem Tag` : 'an diesem Tag keine Sonne');
-    if (c.facadeDeg != null) parts.push(`Plätze vermutlich nach ${compass(c.facadeDeg)}`);
-    else parts.push('frei stehend');
-    parts.push(c.seating === 'yes' ? 'Außenplätze: ja' : c.seating === 'no' ? 'Außenplätze: nein' : 'Außenplätze: unbekannt');
-    if (c.kind === 'Eisdiele') parts.unshift('Eisdiele');
-    meta.textContent = parts.join(' · ') + ' · ';
-    const edit = document.createElement('a');
-    edit.href = `https://www.openstreetmap.org/edit?${c.osmType}=${c.osmId}`;
-    edit.target = '_blank'; edit.rel = 'noopener';
-    edit.textContent = 'in OSM bearbeiten';
-    meta.append(edit);
-    frag.append(el);
+  // Tagesleiste: oben Sonne, unten Öffnungszeit
+  const stopsSun = [], stopsOpen = [];
+  for (let j = 0; j < day.steps.length; j++) {
+    const v = pc.sun[j];
+    const col = v < 0 ? 'var(--night)' : v >= SUNNY ? 'var(--sun)' : v > 0 ? 'var(--part)' : 'var(--shade)';
+    const oc = pc.open[j] === 1 ? 'var(--open)' : pc.open[j] === 0 ? 'var(--closed)' : 'transparent';
+    const a0 = pct(Math.max(0, j - 0.5)), a1 = pct(Math.min(day.steps.length - 1, j + 0.5));
+    stopsSun.push(`${col} ${a0}%`, `${col} ${a1}%`);
+    stopsOpen.push(`${oc} ${a0}%`, `${oc} ${a1}%`);
   }
+  el.querySelector('.bar-sun').style.background = `linear-gradient(90deg, ${stopsSun.join(',')})`;
+  el.querySelector('.bar-open').style.background = `linear-gradient(90deg, ${stopsOpen.join(',')})`;
+  el.querySelector('.bar-now').style.left = `${pct(i)}%`;
+  const scale = el.querySelectorAll('.bar-scale span');
+  scale[0].textContent = `↑ ${hhmm(day.sunrise)}`;
+  scale[1].textContent = `${hhmm(day.sunset)} ↓`;
+
+  const meta = el.querySelector('.meta');
+  const total = sunMinutesOfDay(pc.sun);
+  const parts = [];
+  parts.push(total ? `${fmtDuration(total)} Sonne an diesem Tag` : 'an diesem Tag keine Sonne');
+  if (c.facadeDeg != null) parts.push(`Plätze vermutlich nach ${compass(c.facadeDeg)}`);
+  else parts.push('frei stehend');
+  parts.push(c.seating === 'yes' ? 'Außenplätze: ja' : c.seating === 'no' ? 'Außenplätze: nein' : 'Außenplätze: unbekannt');
+  if (c.kind === 'Eisdiele') parts.unshift('Eisdiele');
+  meta.textContent = parts.join(' · ') + ' · ';
+  const edit = document.createElement('a');
+  edit.href = `https://www.openstreetmap.org/edit?${c.osmType}=${c.osmId}`;
+  edit.target = '_blank'; edit.rel = 'noopener';
+  edit.textContent = 'in OSM bearbeiten';
+  meta.append(edit);
+  el.addEventListener('click', (e) => {
+    if (e.target.closest('a')) return;
+    selectCafe(c.id, true);
+  });
+  return el;
+}
+
+function renderList() {
+  const day = dayInfo(state.dayOffset);
+  const list = $('list');
+  const frag = document.createDocumentFragment();
+  for (const c of state.rows) frag.append(cardFor(c, day, state.step, state.cloudy));
   list.replaceChildren(frag);
-  if (!rows.length && state.cafes.length) {
+  if (!state.rows.length && state.cafes.length) {
     const li = document.createElement('li');
     li.className = 'empty';
     li.textContent = 'Mit diesen Filtern bleibt nichts übrig.';
     list.append(li);
   }
+}
+
+/* ---------- Karte ---------- */
+
+async function ensureMap() {
+  if (!state.map) {
+    state.map = new SunMap($('map'), { onSelect: (id) => selectCafe(id, false) });
+  }
+  await state.map.init(state.place);
+  if (!state.areaSet && state.buildings) {
+    state.map.setArea({ place: state.place, proj: state.proj, buildings: state.buildings, radius: state.filters.radius, extent: state.extent });
+    state.areaSet = true;
+    state.drawnKey = null;
+  }
+  state.map.resize();
+}
+
+function renderMap() {
+  const m = state.map;
+  const day = dayInfo(state.dayOffset);
+  const i = state.step;
+  if (m && m.map && state.areaSet) {
+    const key = state.dayOffset + ':' + i + ':' + state.loadId;
+    if (key !== state.drawnKey) { m.drawSun(day.suns[i]); state.drawnKey = key; }
+    const items = state.rows.map((c) => {
+      const pc = day.perCafe[c._i];
+      const v = pc.sun[i];
+      const cls = v < 0 ? 'night' : v >= SUNNY ? 'sun' : v > 0 ? 'part' : 'shade';
+      const samples = c.id === state.selected ? c.samples.map((p) => {
+        const [la, lo] = state.proj.toLatLon(p.x, p.y);
+        const s = day.suns[i];
+        const lit = s.altDeg > 0.5 && !state.index.isShaded(p.x, p.y, s.dx, s.dy, s.tanAlt, 1.2, p.ex);
+        return { lat: la, lon: lo, lit };
+      }) : [];
+      return { id: c.id, lat: c.lat, lon: c.lon, name: c.name, cls, closed: pc.open[i] === 0, samples };
+    });
+    m.setCafes(items, state.selected);
+  }
+  const box = $('mapCard');
+  const sel = state.rows.find((c) => c.id === state.selected);
+  if (sel) box.replaceChildren(cardFor(sel, day, i, state.cloudy));
+  else {
+    const li = document.createElement('li');
+    li.className = 'hint';
+    const n = state.rows.filter((c) => day.perCafe[c._i].sun[i] >= SUNNY && day.perCafe[c._i].open[i] !== 0).length;
+    li.textContent = state.cafes.length
+      ? `${n === 1 ? 'Ein Café liegt' : n + ' Cafés liegen'} gerade in der Sonne. Tippe auf einen Punkt für Details.`
+      : '';
+    box.replaceChildren(li);
+  }
+}
+
+function selectCafe(id, fromList) {
+  state.selected = id;
+  const c = state.cafes.find((x) => x.id === id);
+  if (fromList) showView('map');
+  else render();
+  if (c && state.map) state.map.flyTo(c.lat, c.lon);
+}
+
+async function showView(view) {
+  state.view = view;
+  store.set('view', view);
+  document.querySelectorAll('[data-view]').forEach((b) => {
+    const on = b.dataset.view === view;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on);
+  });
+  $('mapView').hidden = view !== 'map';
+  $('list').hidden = view !== 'list';
+  if (view === 'map' && state.place) {
+    try { await ensureMap(); } catch (e) { console.error(e); }
+  }
+  if (state.cafes.length || state.rows) render();
 }
 
 function chip(text, cls) {
@@ -599,6 +702,8 @@ function bind() {
     b.onclick = () => { const [lat, lon, label] = b.dataset.place.split(','); setPlace({ lat: +lat, lon: +lon, label, source: 'preset' }); };
   });
   $('time').oninput = (e) => { state.step = +e.target.value; render(); };
+  document.querySelectorAll('[data-view]').forEach((b) => { b.onclick = () => showView(b.dataset.view); });
+  $('btn3d').onclick = () => { const on = state.map?.toggle3d(); $('btn3d').setAttribute('aria-pressed', !!on); };
   $('nowBtn').onclick = () => {
     const day = dayInfo(0);
     const now = new Date();
@@ -623,6 +728,7 @@ function bind() {
 }
 
 bind();
+showView(state.view);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 const fromUrl = placeFromUrl();
 if (fromUrl) setPlace(fromUrl); else useGps();

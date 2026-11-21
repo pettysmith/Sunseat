@@ -48,3 +48,12 @@ test('Projektion ist umkehrbar', () => {
   const [la, lo] = p.toLatLon(x, y);
   assert.ok(Math.abs(la - 53.556) < 1e-9 && Math.abs(lo - 9.98) < 1e-9);
 });
+
+test('Schattenfläche zeigt von der Sonne weg und hat die richtige Länge', async () => {
+  const { shadowShapes } = await import('../shadow.js');
+  const shapes = shadowShapes([box(0, 0, 10, 10, 10)], sunAt(180, 45)); // Sonne aus Süden, 45° → 10 m Schatten nach Norden
+  const ys = shapes.flat().map((p) => p[1]);
+  assert.ok(Math.abs(Math.max(...ys) - 20) < 1e-9);
+  assert.ok(Math.min(...ys) >= 0);
+  assert.equal(shadowShapes([box(0, 0, 10, 10, 10)], sunAt(180, -1)).length, 0);
+});
