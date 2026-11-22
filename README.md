@@ -26,6 +26,14 @@ Für das Gebiet Bahrenfeld bis Hamm und Wilhelmsburg-Nord bis Barmbek-Nord (1557
 
   Mit `VERIFY=1` wird zusätzlich die Übereinstimmung mit der Strahlrechnung ausgegeben. Für das ganze Gebiet dauert der Lauf einige Minuten, vor allem wegen des Baumkatasters. Das Rechnen selbst braucht etwa 1 Sekunde.
 
+## Außenbereiche aus OpenStreetMap
+
+Ist zu einem Café oder einer Bar ein Außenbereich eingetragen (`leisure=outdoor_seating`, als Fläche oder Punkt), rechnet die App dort statt 3 m vor der Fassade.
+- **Zuordnung:** Ein gleicher Name hat Vorrang (bis 80 m Abstand), sonst gilt der nächste Ort im Umkreis von 40 m.
+- **Sitzpunkte bei einer Fläche:** die Mitte und zwei Punkte entlang der längsten Ausdehnung.
+- **Sitzpunkte bei einem Punkt:** der Punkt und je einer 2,5 m daneben entlang der Fassade.
+- **Grenze:** Die vorab berechneten Profile bei weitem Zoom nutzen das noch nicht, weil sie ohne Overpass erzeugt werden.
+
 ## Listenansicht
 
 - **Der Knopf „Listenansicht“** öffnet eine Liste: geöffnete Cafés und Bars, die jetzt Sonne haben, im Umkreis von 2 km um deinen Standort. Sortiert nach Entfernung, mit Gehzeit, „Sonne bis …“ und Öffnungszeit.

@@ -372,3 +372,38 @@ export function roofRings(buildings) {
   }
   return out;
 }
+
+function insideRings(x, y, rings) {
+  return rings.some((r) => pointInRing(x, y, r));
+}
+
+/**
+ * Sitzpunkte in einem eingetragenen Außenbereich: Mitte und zwei Punkte entlang der längsten
+ * Ausdehnung (je ein Drittel zur Mitte hin). Bei einem Punkt ohne Fläche: der Punkt und je
+ * 2,5 m links und rechts entlang der nächsten Fassade.
+ */
+export function seatsInArea(index, cx, cy, rings) {
+  const edge = index.nearestEdge(cx, cy, 25);
+  let facadeDeg = null;
+  if (edge) {
+    const nx = cx - edge.qx, ny = cy - edge.qy;
+    if (Math.hypot(nx, ny) > 0.3) facadeDeg = ((Math.atan2(nx, ny) * 180) / Math.PI + 360) % 360;
+  }
+  if (!rings.length) {
+    let ux = 1, uy = 0;
+    if (edge) { const dx = edge.x2 - edge.x1, dy = edge.y2 - edge.y1, L = Math.hypot(dx, dy); ux = dx / L; uy = dy / L; }
+    return { samples: [[cx, cy], [cx - ux * 2.5, cy - uy * 2.5], [cx + ux * 2.5, cy + uy * 2.5]], facadeDeg };
+  }
+  // Längste Ausdehnung der Fläche
+  const pts = rings.flat();
+  let a = pts[0], b = pts[0], best = 0;
+  for (const p of pts) for (const q of pts) { const d = Math.hypot(p[0] - q[0], p[1] - q[1]); if (d > best) { best = d; a = p; b = q; } }
+  let mx = cx, my = cy;
+  if (!insideRings(mx, my, rings)) { mx = (a[0] + b[0]) / 2; my = (a[1] + b[1]) / 2; }
+  const samples = [[mx, my]];
+  for (const t of [1 / 3, 2 / 3]) {
+    const x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t;
+    samples.push(insideRings(x, y, rings) ? [x, y] : [mx, my]);
+  }
+  return { samples, facadeDeg };
+}

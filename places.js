@@ -1,6 +1,6 @@
 // Sunseat – Cafés und Bars: laden (Overpass, sonst Kartenkacheln), Öffnungszeiten,
 // Sonne am geschätzten Sitzplatz.
-import { ShadowIndex, terraceSamples } from './shadow.js';
+import { ShadowIndex, terraceSamples, seatsInArea } from './shadow.js';
 import { TreeIndex, inHamburg } from './trees.js';
 import { cacheGet, cacheSet } from './db.js';
 
@@ -49,9 +49,30 @@ function parseHours(value, lat, lon) {
   }
 }
 
+/** Mittelpunkt eines Overpass-Elements (Punkt, „center“ oder Ausdehnung bei „out geom“). */
+function elCenter(el) {
+  if (el.lat != null) return [el.lat, el.lon];
+  if (el.center) return [el.center.lat, el.center.lon];
+  if (el.bounds) return [(el.bounds.minlat + el.bounds.maxlat) / 2, (el.bounds.minlon + el.bounds.maxlon) / 2];
+  return [null, null];
+}
+
+/** Außenbereich (leisure=outdoor_seating) als Punkt oder Ring(e) in Grad. */
+function toSeatArea(el) {
+  const t = el.tags || {};
+  if (t.leisure !== 'outdoor_seating') return null;
+  const [lat, lon] = elCenter(el);
+  if (lat == null) return null;
+  let rings = [];
+  if (el.type === 'way' && el.geometry?.length >= 3) rings = [el.geometry.map((g) => [g.lat, g.lon])];
+  if (el.type === 'relation') rings = (el.members || []).filter((m) => m.role !== 'inner' && m.geometry?.length >= 3).map((m) => m.geometry.map((g) => [g.lat, g.lon]));
+  return { area: true, lat, lon, rings, name: t.name || null };
+}
+
 function toPlace(el) {
   const t = el.tags || {};
-  const lat = el.lat ?? el.center?.lat, lon = el.lon ?? el.center?.lon;
+  if (!t.amenity) return null;
+  const [lat, lon] = elCenter(el);
   if (lat == null) return null;
   const sub = t.amenity;
   return {
@@ -59,6 +80,39 @@ function toPlace(el) {
     lat, lon, tags: t, oh: parseHours(t.opening_hours, lat, lon),
     seating: t.outdoor_seating == null ? null : t.outdoor_seating !== 'no', source: 'osm',
   };
+}
+
+/** Sitzpunkte: im eingetragenen Außenbereich, sonst 3 m vor der nächsten Fassade geschätzt. */
+function seatGeometry(places, index, place) {
+  const proj = places.sl.proj;
+  if (place.seatArea) {
+    const a = place.seatArea;
+    const rings = a.rings.map((r) => r.map(([la, lo]) => proj.toXY(la, lo)));
+    const [x, y] = proj.toXY(a.lat, a.lon);
+    return { ...seatsInArea(index, x, y, rings), mode: 'osm-area' };
+  }
+  const [x, y] = proj.toXY(place.lat, place.lon);
+  return { ...terraceSamples(index, x, y), mode: 'estimated' };
+}
+
+const metersApprox = (a, b) => Math.hypot((a.lat - b.lat) * 110540, (a.lon - b.lon) * 111320 * Math.cos((a.lat * Math.PI) / 180));
+
+/**
+ * Außenbereiche den Orten zuordnen: gleicher Name hat Vorrang, sonst der nächste Ort
+ * (höchstens 40 m vom Ort entfernt). Ein Ort mit Außenbereich hat Außenplätze.
+ */
+function attachSeatAreas(places, areas) {
+  for (const a of areas) {
+    let best = null, bestD = Infinity;
+    for (const p of places) {
+      const d = metersApprox(a, p);
+      if (d > (a.name && a.name === p.name ? 80 : 40)) continue;
+      const score = a.name && a.name === p.name ? d - 1000 : d;
+      if (score < bestD) { bestD = score; best = p; }
+    }
+    if (best && !best.seatArea) { best.seatArea = a; if (best.seating == null) best.seating = true; }
+  }
+  return places;
 }
 
 function dedupe(list) {
@@ -83,7 +137,11 @@ export class Places {
   inTiles(keys) {
     const fast = Promise.all(keys.map((k) => this._fast(k))).then((r) => dedupe(r.flat()));
     this._fetchMissing(keys);
-    const full = Promise.all(keys.map((k) => this.tiles.get(k))).then((r) => (r.every(Boolean) ? dedupe(r.flat()) : null));
+    const full = Promise.all(keys.map((k) => this.tiles.get(k))).then((r) => {
+      if (!r.every(Boolean)) return null;
+      const all = r.flat();
+      return attachSeatAreas(dedupe(all.filter((x) => !x.area)), all.filter((x) => x.area));
+    });
     return { fast, full };
   }
 
@@ -108,8 +166,8 @@ export class Places {
     (async () => {
       const need = [];
       for (const k of missing) {
-        const cached = await cacheGet('osm:' + k, OSM_MAX_AGE);
-        if (cached) resolvers.get(k)(cached.map(toPlace).filter(Boolean));
+        const cached = await cacheGet('osm2:' + k, OSM_MAX_AGE);
+        if (cached) resolvers.get(k)(cached.map((el) => toPlace(el) || toSeatArea(el)).filter(Boolean));
         else need.push(k);
       }
       if (!need.length) return;
@@ -120,7 +178,8 @@ export class Places {
       }
       let elements = null;
       try {
-        const j = await overpass(`[out:json][timeout:40];nwr["amenity"~"^(cafe|bar|pub|biergarten)$"]["name"](${s},${w},${n},${e});out center tags;`);
+        const bb = `${s},${w},${n},${e}`;
+        const j = await overpass(`[out:json][timeout:40];nwr["amenity"~"^(cafe|bar|pub|biergarten)$"]["name"](${bb});out center tags;nwr["leisure"="outdoor_seating"](${bb});out geom tags;`);
         elements = j.elements;
       } catch { /* nicht erreichbar */ }
       for (const k of need) {
@@ -131,11 +190,11 @@ export class Places {
         }
         const b = tileBBox(k);
         const mine = elements.filter((el) => {
-          const lat = el.lat ?? el.center?.lat, lon = el.lon ?? el.center?.lon;
+          const [lat, lon] = elCenter(el);
           return lat >= b.s && lat < b.n && lon >= b.w && lon < b.e;
         });
-        cacheSet('osm:' + k, mine);
-        resolvers.get(k)(mine.map(toPlace).filter(Boolean));
+        cacheSet('osm2:' + k, mine);
+        resolvers.get(k)(mine.map((el) => toPlace(el) || toSeatArea(el)).filter(Boolean));
       }
     })();
   }
@@ -160,12 +219,12 @@ export class Places {
     let c = this.cache.get(place.id);
     if (!c || c.indexKey !== indexKey) {
       const [x, y] = this.sl.proj.toXY(place.lat, place.lon);
-      const t = terraceSamples(index, x, y);
+      const t = seatGeometry(this, index, place);
       const samples = t.samples.map(([sx, sy]) => {
         const ex = index.buildingsAt(sx, sy);
         return { x: sx, y: sy, ex: ex.length ? new Set(ex) : null };
       });
-      c = { indexKey, samples, facadeDeg: t.facadeDeg, days: new Map() };
+      c = { indexKey, samples, facadeDeg: t.facadeDeg, seat: t.mode, days: new Map() };
       this.cache.set(place.id, c);
     }
     return c;
@@ -204,6 +263,7 @@ export class Places {
     const { index, trees } = this.index;
     return {
       facadeDeg: c.facadeDeg,
+      seat: c.seat,                     // 'osm-area' = eingetragener Außenbereich, 'estimated' = geschätzt
       samples: c.samples.map((p) => {
         const [lat, lon] = this.sl.proj.toLatLon(p.x, p.y);
         const building = sun.altDeg > 0.5 && index.isShaded(p.x, p.y, sun.dx, sun.dy, sun.tanAlt, 1.2, p.ex);
@@ -221,7 +281,7 @@ export class Places {
       for (let i = 0; i < suns.length; i++) if (Number.isNaN(arr[i])) this._compute(c, arr, suns, i);
       (c.full ??= new Set()).add(dayKey);
     }
-    return { sun: arr, facadeDeg: c.facadeDeg, samples: c.samples };
+    return { sun: arr, facadeDeg: c.facadeDeg, samples: c.samples, seat: c.seat };
   }
 }
 
@@ -249,9 +309,8 @@ export async function preciseContext(places, place, signal) {
 export function preciseTimeline(places, place, ctx, dayKey, suns) {
   const key = ctx.id + ':' + dayKey;
   if (place._precise?.key === key) return place._precise.sun;
-  const [x0, y0] = places.sl.proj.toXY(place.lat, place.lon);
-  // Sitzpunkte wie gehabt (Fassade aus OSM), Schatten aus LoD2 + OSM außerhalb + Bäume
-  const t = terraceSamples(places.index?.index || ctx.osm, x0, y0);
+  // Sitzpunkte wie gehabt (Außenbereich aus OSM oder vor der Fassade geschätzt), Schatten aus LoD2 + OSM außerhalb + Bäume
+  const t = seatGeometry(places, places.index?.index || ctx.osm, place);
   const samples = t.samples.map(([x, y]) => {
     const ex = ctx.osm.buildingsAt(x, y);
     return { x, y, ex: ex.length ? new Set(ex) : null, lodEx: ctx.lod.buildingsAt(x, y) };

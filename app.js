@@ -301,7 +301,7 @@ function visiblePlaces(limit = MAX_LIST) {
 /** Sonne und Öffnung eines Ortes für den gewählten Tag (gecacht). */
 function info(p) {
   if (!places?.index) return null;
-  let { sun, facadeDeg } = places.sunTimeline(p, state.dayKey, state.suns);
+  let { sun, facadeDeg, seat } = places.sunTimeline(p, state.dayKey, state.suns);
   // Im Gebiet des 3D-Stadtmodells genauer rechnen
   const ctx = state.precise?.ctx;
   let precise = false;
@@ -309,8 +309,7 @@ function info(p) {
     const [x, y] = layer.proj.toXY(p.lat, p.lon);
     if (ctx.lod.covers(x, y, 60)) { sun = preciseTimeline(places, p, ctx, state.dayKey, state.suns); precise = true; }
   }
-  if (precise) return { sun, open: openArr(p), facadeDeg, precise };
-  return { sun, open: openArr(p), facadeDeg };
+  return { sun, open: openArr(p), facadeDeg, seat, precise };
 }
 
 function openArr(p) {
@@ -611,7 +610,7 @@ function renderDetail() {
       <div class="dayline-scale"><span>Sonnenaufgang ${uhr(state.sunrise)}</span><span>Sonnenuntergang ${uhr(state.sunset)}</span></div>
       <p class="note source-note">${preciseNote(p, inf)}</p>
       <p class="note">${total ? `Sonne an diesem Tag insgesamt ${total >= 60 ? Math.floor(total / 60) + ' h' : ''}${total >= 60 && total % 60 ? ' ' : ''}${total % 60 ? (total % 60) + ' min' : ''}.` : 'An diesem Tag keine Sonne.'}
-      Berechnet für Plätze 3 m vor der ${inf.facadeDeg != null ? SIDE[Math.round(inf.facadeDeg / 45) % 8] + 'seite des Gebäudes' : 'nächsten Fassade'}.</p>
+      ${inf.seat === 'osm-area' ? 'Berechnet für den in OpenStreetMap eingetragenen Außenbereich.' : `Berechnet für Plätze 3 m vor der ${inf.facadeDeg != null ? SIDE[Math.round(inf.facadeDeg / 45) % 8] + 'seite des Gebäudes' : 'nächsten Fassade'}.`}</p>
     </section>
 
     <section class="group" ${state.rateFor === p.id && state.rateVisible ? '' : 'hidden'}>
@@ -893,6 +892,7 @@ function showRatingButtons(box, p) {
           buildings: source,                          // 'lod2' = 3D-Stadtmodell, 'osm' = OpenStreetMap-Höhen
           trees: inHamburgBox(p) ? 'baumkataster-hamburg' : 'keine',
           facadeDeg: diag.facadeDeg,
+          seat: diag.seat,                            // 'osm-area' = eingetragener Außenbereich, 'estimated' = geschätzt
           samples: diag.samples,                      // je Sitzpunkt: von Gebäude / Baum beschattet? (OSM-Rechnung)
         },
         sun: { altitude: +s.altDeg.toFixed(2), azimuth: +s.bearingDeg.toFixed(2) },

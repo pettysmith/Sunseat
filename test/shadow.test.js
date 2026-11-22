@@ -133,3 +133,17 @@ test('Profil-Auswertung: Sonne nur über dem Horizont und außerhalb des Baumban
   assert.equal(sunFraction(pl, sun(45, 185, 0), bins), 1); // Winter: kein Laub
   assert.equal(sunFraction(pl, sun(-1, 185), bins), -1);  // Nacht
 });
+
+test('Außenbereich: Sitzpunkte liegen in der Fläche', async () => {
+  const { seatsInArea } = await import('../shadow.js');
+  const idx = new ShadowIndex([box(0, 0, 20, 15, 15)]);
+  // Fläche 12 x 4 m vor der Südfassade
+  const ring = [[4, -6], [16, -6], [16, -2], [4, -2], [4, -6]];
+  const t = seatsInArea(idx, 10, -4, [ring]);
+  assert.equal(t.samples.length, 3);
+  for (const [x, y] of t.samples) assert.ok(x >= 4 && x <= 16 && y >= -6 && y <= -2);
+  assert.ok(Math.abs(t.facadeDeg - 180) < 1);
+  // Nur ein Punkt: entlang der Fassade verteilt
+  const pt = seatsInArea(idx, 10, -4, []);
+  assert.ok(pt.samples.every(([, y]) => y === -4));
+});
