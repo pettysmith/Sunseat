@@ -372,20 +372,3 @@ export function roofRings(buildings) {
   }
   return out;
 }
-
-/**
- * Sitzpunkte um einen vom Nutzer gesetzten Punkt: der Punkt selbst und je einer 2,5 m links
- * und rechts, entlang der nächsten Fassade (sonst Ost–West).
- */
-export function terraceFromPoint(index, x, y) {
-  const edge = index.nearestEdge(x, y, 15);
-  let ux = 1, uy = 0, facadeDeg = null;
-  if (edge) {
-    const dx = edge.x2 - edge.x1, dy = edge.y2 - edge.y1, L = Math.hypot(dx, dy);
-    ux = dx / L; uy = dy / L;
-    // Fassade zeigt vom Gebäude zum gesetzten Punkt
-    const nx = x - edge.qx, ny = y - edge.qy;
-    if (Math.hypot(nx, ny) > 0.3) facadeDeg = ((Math.atan2(nx, ny) * 180) / Math.PI + 360) % 360;
-  }
-  return { samples: [[x, y], [x - ux * 2.5, y - uy * 2.5], [x + ux * 2.5, y + uy * 2.5]], facadeDeg, mode: 'user' };
-}

@@ -1,6 +1,6 @@
 // Sunseat – Cafés und Bars: laden (Overpass, sonst Kartenkacheln), Öffnungszeiten,
 // Sonne am geschätzten Sitzplatz.
-import { ShadowIndex, terraceSamples, terraceFromPoint } from './shadow.js';
+import { ShadowIndex, terraceSamples } from './shadow.js';
 import { TreeIndex, inHamburg } from './trees.js';
 import { cacheGet, cacheSet } from './db.js';
 
@@ -59,19 +59,6 @@ function toPlace(el) {
     lat, lon, tags: t, oh: parseHours(t.opening_hours, lat, lon),
     seating: t.outdoor_seating == null ? null : t.outdoor_seating !== 'no', source: 'osm',
   };
-}
-
-/**
- * Sitzpunkte eines Ortes: vom Nutzer gesetzt (places.terraceFor), sonst 3 m vor der nächsten Fassade geschätzt.
- */
-function seatGeometry(places, index, place) {
-  const own = places.terraceFor?.(place);
-  if (own) {
-    const [x, y] = places.sl.proj.toXY(own.lat, own.lon);
-    return terraceFromPoint(index, x, y);
-  }
-  const [x, y] = places.sl.proj.toXY(place.lat, place.lon);
-  return { ...terraceSamples(index, x, y), mode: 'estimated' };
 }
 
 function dedupe(list) {
@@ -172,12 +159,13 @@ export class Places {
     const { key: indexKey, index } = this.index;
     let c = this.cache.get(place.id);
     if (!c || c.indexKey !== indexKey) {
-      const t = seatGeometry(this, index, place);
+      const [x, y] = this.sl.proj.toXY(place.lat, place.lon);
+      const t = terraceSamples(index, x, y);
       const samples = t.samples.map(([sx, sy]) => {
         const ex = index.buildingsAt(sx, sy);
         return { x: sx, y: sy, ex: ex.length ? new Set(ex) : null };
       });
-      c = { indexKey, samples, facadeDeg: t.facadeDeg, seat: t.mode, days: new Map() };
+      c = { indexKey, samples, facadeDeg: t.facadeDeg, days: new Map() };
       this.cache.set(place.id, c);
     }
     return c;
@@ -210,19 +198,12 @@ export class Places {
     return arr[i];
   }
 
-  /** Nach dem Setzen oder Zurücksetzen der Tische neu rechnen. */
-  forget(place) {
-    this.cache.delete(place.id);
-    place._precise = null;
-  }
-
   /** Begründung der Prognose je Sitzpunkt: von Gebäude oder Baum beschattet? (für Rückmeldungen) */
   diagnose(place, sun) {
     const c = this._entry(place);
     const { index, trees } = this.index;
     return {
       facadeDeg: c.facadeDeg,
-      seat: c.seat,
       samples: c.samples.map((p) => {
         const [lat, lon] = this.sl.proj.toLatLon(p.x, p.y);
         const building = sun.altDeg > 0.5 && index.isShaded(p.x, p.y, sun.dx, sun.dy, sun.tanAlt, 1.2, p.ex);
@@ -240,7 +221,7 @@ export class Places {
       for (let i = 0; i < suns.length; i++) if (Number.isNaN(arr[i])) this._compute(c, arr, suns, i);
       (c.full ??= new Set()).add(dayKey);
     }
-    return { sun: arr, facadeDeg: c.facadeDeg, samples: c.samples, seat: c.seat };
+    return { sun: arr, facadeDeg: c.facadeDeg, samples: c.samples };
   }
 }
 
@@ -268,8 +249,9 @@ export async function preciseContext(places, place, signal) {
 export function preciseTimeline(places, place, ctx, dayKey, suns) {
   const key = ctx.id + ':' + dayKey;
   if (place._precise?.key === key) return place._precise.sun;
-  // Sitzpunkte wie gehabt (gesetzt oder an der OSM-Fassade geschätzt), Schatten aus LoD2 + OSM außerhalb + Bäume
-  const t = seatGeometry(places, places.index?.index || ctx.osm, place);
+  const [x0, y0] = places.sl.proj.toXY(place.lat, place.lon);
+  // Sitzpunkte wie gehabt (Fassade aus OSM), Schatten aus LoD2 + OSM außerhalb + Bäume
+  const t = terraceSamples(places.index?.index || ctx.osm, x0, y0);
   const samples = t.samples.map(([x, y]) => {
     const ex = ctx.osm.buildingsAt(x, y);
     return { x, y, ex: ex.length ? new Set(ex) : null, lodEx: ctx.lod.buildingsAt(x, y) };
