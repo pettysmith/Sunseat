@@ -1,6 +1,6 @@
 // Sunseat – Sonnen-Karte mit Cafés und Bars
 import { SunLayer, MIN_ZOOM } from './sunlayer.js';
-import { addFeedback, allFeedback, feedbackFor, markReplaced } from './db.js';
+import { addFeedback, feedbackFor } from './db.js';
 import { loadProfiles, covers, sunFraction, timeline } from './profiles.js';
 import { sunVector, compass } from './shadow.js';
 import { Places, SUNNY, openTimeline, subLabel, weekHours, preciseContext, preciseTimeline } from './places.js';
@@ -22,7 +22,7 @@ const fmtTime = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-d
 const fmtDay = new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: 'numeric' });
 const fmtWeekday = new Intl.DateTimeFormat('de-DE', { weekday: 'long' });
 const fmtDate = new Intl.DateTimeFormat('de-DE', { day: 'numeric', month: 'long' });
-const hhmm = (d) => fmtTime.format(d);
+const uhr = (d) => `${fmtTime.format(d)} Uhr`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const store = {
@@ -59,7 +59,7 @@ map.on('load', async () => {
   for (const l of map.getStyle().layers) if (/housenum|poi/i.test(l.id)) map.setLayoutProperty(l.id, 'visibility', 'none');
   const firstLabel = map.getStyle().layers.find((l) => l.type === 'symbol')?.id;
   let tileUrl;
-  try { tileUrl = (await (await fetch(TILES)).json()).tiles[0]; } catch { notice('Kartendaten nicht erreichbar'); return; }
+  try { tileUrl = (await (await fetch(TILES)).json()).tiles[0]; } catch { notice('Karte derzeit nicht verfügbar'); return; }
   layer = new SunLayer(map, tileUrl, { beforeId: firstLabel, onStatus, onTrees: () => { clearTimeout(state.treeTimer); state.treeTimer = setTimeout(refreshPlaces, 400); } });
   places = new Places(layer);
   addPlaceLayers();
@@ -110,9 +110,9 @@ function addPlaceLayers() {
 }
 
 function onStatus(s) {
-  if (s === 'zoom') notice(map.getZoom() >= OVERVIEW_ZOOM || profileMode() ? '' : 'Näher heranzoomen, um die Sonne zu sehen');
-  else if (s === 'loading') notice('Lade Gebäude …');
-  else if (s === 'error') notice('Gebäudedaten nicht erreichbar');
+  if (s === 'zoom') notice(map.getZoom() >= OVERVIEW_ZOOM || profileMode() ? '' : 'Sonnenflächen erscheinen beim Heranzoomen');
+  else if (s === 'loading') notice('Gebäude werden geladen');
+  else if (s === 'error') notice('Gebäudedaten derzeit nicht verfügbar');
   else notice('');
 }
 
@@ -152,8 +152,8 @@ function selectDay(offset) {
   const s = $('slider');
   s.max = state.steps.length - 1;
   s.value = state.idx;
-  $('rise').textContent = `Aufgang ${hhmm(times.sunrise)}`;
-  $('set').textContent = `Untergang ${hhmm(times.sunset)}`;
+  $('rise').textContent = `Sonnenaufgang ${uhr(times.sunrise)}`;
+  $('set').textContent = `Sonnenuntergang ${uhr(times.sunset)}`;
   renderDays();
   updateSun();
   renderPlaces();
@@ -184,8 +184,8 @@ function updateSun() {
   const t = state.steps[state.idx];
   const sun = state.suns[state.idx];
   layer.setSun(sun);
-  $('time').textContent = hhmm(t);
-  $('sun').textContent = sun.altDeg > 0 ? `Sonne ${Math.round(sun.altDeg)}° aus ${LONG[compass(sun.bearingDeg)]}` : 'Sonne unter dem Horizont';
+  $('time').textContent = uhr(t);
+  $('sun').textContent = sun.altDeg > 0 ? `Sonnenhöhe ${Math.round(sun.altDeg)}°, aus ${LONG[compass(sun.bearingDeg)]}` : 'Sonne unter dem Horizont';
   $('now').setAttribute('aria-pressed', state.dayOffset === 0 && Math.abs(t - new Date()) <= STEP * 60000);
   const pct = (state.idx / Math.max(1, state.steps.length - 1)) * 100;
   $('slider').style.setProperty('--track', `linear-gradient(90deg, var(--sun) ${pct}%, var(--separator) ${pct}%)`);
@@ -227,11 +227,17 @@ function weatherAt(t) {
   return { cloud, sunMin, cloudy };
 }
 
+/** Hinweis bei bedecktem Himmel, mit der gewählten Uhrzeit. */
+function cloudNote(t) {
+  const w = weatherAt(t);
+  return `Vorhersage für ${uhr(t)}: bedeckt${w ? ` (Bewölkung ${Math.round(w.cloud)} %)` : ''}. Sonne ist unwahrscheinlich.`;
+}
+
 function renderCloud(t) {
   const w = weatherAt(t);
   state.cloudy = !!w?.cloudy;
   layer?.setCloudy(state.cloudy);
-  $('cloud').textContent = !w ? '' : w.cloudy ? `Bewölkt (${Math.round(w.cloud)} %)` : `Bewölkung ${Math.round(w.cloud)} %`;
+  $('cloud').textContent = !w ? '' : w.cloudy ? `Bewölkung ${Math.round(w.cloud)} %, bedeckt` : `Bewölkung ${Math.round(w.cloud)} %`;
   $('cloud').classList.toggle('cloudy', state.cloudy);
 }
 
@@ -260,11 +266,11 @@ async function refreshPlaces() {
     state.placesKey = key;
     state.fullDone = false;
     state.haveOsm = false;
-    $('listMeta').textContent = 'Lade …';
+    $('listMeta').textContent = 'werden geladen';
     const { fast, full } = places.inTiles(keys);
     state.fastP = fast
       .then((list) => { if (state.placesKey === key && !state.haveOsm) { state.places = list; state.source = 'tiles'; } })
-      .catch(() => { if (state.placesKey === key) $('listMeta').textContent = 'Nicht erreichbar'; });
+      .catch(() => { if (state.placesKey === key) $('listMeta').textContent = 'derzeit nicht verfügbar'; });
     full.then(async (list) => {
       if (state.placesKey !== key) return;
       state.fullDone = true;
@@ -275,7 +281,7 @@ async function refreshPlaces() {
   }
   await state.fastP;
   if (run !== placesRun) return;
-  $('listMeta').textContent = 'Berechne …';
+  $('listMeta').textContent = 'werden berechnet';
   try { await places.prepare(visiblePlaces(Infinity)); } catch { return; }
   if (run !== placesRun) return;
   renderPlaces();
@@ -320,26 +326,26 @@ function sunText(sun, i) {
   if (st === 'night') return { st, text: 'Keine Sonne' };
   if (st === 'sun') {
     let j = i; while (j < sun.length && sun[j] >= SUNNY) j++;
-    return { st, text: j >= sun.length ? 'Sonne bis Sonnenuntergang' : `Sonne bis ${hhmm(steps[j])}` };
+    return { st, text: j >= sun.length ? `Sonne bis Sonnenuntergang (${uhr(state.sunset)})` : `Sonne bis ${uhr(steps[j])}` };
   }
   let j = i; while (j < sun.length && !(sun[j] >= SUNNY)) j++;
-  const later = j < sun.length ? `Sonne ab ${hhmm(steps[j])}` : 'Keine Sonne mehr';
-  return { st, text: st === 'part' ? `Halbschatten · ${later}` : `Schatten · ${later}` };
+  const later = j < sun.length ? `Sonne ab ${uhr(steps[j])}` : 'danach keine Sonne';
+  return { st, text: st === 'part' ? `Halbschatten, ${later}` : `Schatten, ${later}` };
 }
 
 function openText(p, t, code) {
-  if (!p.oh) return { cls: '', text: state.source === 'tiles' ? '' : 'Keine Öffnungszeiten' };
-  if (p.oh === 'invalid' || code === 2) return { cls: '', text: 'Öffnungszeiten unklar' };
+  if (!p.oh) return { cls: '', text: state.source === 'tiles' ? '' : 'Öffnungszeiten unbekannt' };
+  if (p.oh === 'invalid' || code === 2) return { cls: '', text: 'Öffnungszeiten unbekannt' };
   let next = null;
   try { next = p.oh.getNextChange(t); } catch { /* egal */ }
   const when = (n) => {
     if (!n) return '';
-    if (n.toDateString() === t.toDateString()) return hhmm(n);
-    if (n - t < 6 * 864e5) return `${fmtWeekday.format(n)} ${hhmm(n)}`;
+    if (n.toDateString() === t.toDateString()) return uhr(n);
+    if (n - t < 6 * 864e5) return `${fmtWeekday.format(n)} ${uhr(n)}`;
     return `am ${fmtDate.format(n)}`;
   };
   if (code === 1) return { cls: 'is-open', text: next ? `Geöffnet bis ${when(next)}` : 'Geöffnet' };
-  return { cls: 'is-closed', text: next ? `Geschlossen · öffnet ${when(next)}` : 'Geschlossen' };
+  return { cls: 'is-closed', text: next ? `Geschlossen, öffnet ${when(next)}` : 'Geschlossen' };
 }
 
 function passes(p, inf, i) {
@@ -408,30 +414,30 @@ function renderPlaces() {
   const sunny = rows.filter(({ inf }) => inf.sun[i] >= SUNNY && inf.open[i] !== 0).length;
   if (overview) {
     $('listTitle').textContent = rows.length ? `${rows.length} ${rows.length === 1 ? 'Sonnenplatz' : 'Sonnenplätze'}` : 'Keine Sonnenplätze';
-    $('listMeta').textContent = state.cloudy ? 'bewölkt' : 'im Ausschnitt';
+    $('listMeta').textContent = 'im Kartenausschnitt';
   } else {
-    $('listTitle').textContent = !zoomOk ? 'Cafés und Bars' : rows.length ? `${rows.length} ${rows.length === 1 ? 'Ort' : 'Orte'}` : 'Keine Orte';
-    $('listMeta').textContent = zoomOk && rows.length ? (state.cloudy ? `${sunny} frei, bewölkt` : `${sunny} in der Sonne`) : '';
+    $('listTitle').textContent = !zoomOk ? 'Cafés und Bars' : rows.length ? `${rows.length} ${rows.length === 1 ? 'Ort' : 'Orte'} im Kartenausschnitt` : 'Keine Orte';
+    $('listMeta').textContent = zoomOk && rows.length ? (state.cloudy ? `davon ${sunny} frei, aber bedeckt` : `davon ${sunny} in der Sonne`) : '';
   }
   const ul = $('list');
   ul.replaceChildren();
   const note = (text) => { const li = document.createElement('li'); li.className = 'empty'; li.textContent = text; ul.append(li); };
   if (!zoomOk && !overview) {
-    note(zoom < OVERVIEW_ZOOM || state.placesKey === '' ? 'Zum Anzeigen näher heranzoomen.' : 'Lade …');
+    note(zoom < OVERVIEW_ZOOM || state.placesKey === '' ? 'Orte erscheinen beim Heranzoomen.' : 'Orte werden geladen.');
     return;
   }
-  if (overview) note('Nur Orte in der Sonne. Für alle Orte näher heranzoomen.');
-  if (state.cloudy) note('Laut Vorhersage bedeckt.');
-  if (state.source === 'tiles') note(state.fullDone ? 'Öffnungszeiten gerade nicht abrufbar.' : 'Lade Öffnungszeiten …');
-  if (state.filters.open && unknownHours) note(`${unknownHours} ${unknownHours === 1 ? 'Ort' : 'Orte'} ohne Öffnungszeiten ausgeblendet.`);
-  if (!rows.length) { note('Keine Treffer mit diesen Filtern.'); return; }
+  if (overview) note('Angezeigt werden nur Orte in der Sonne. Alle Orte erscheinen beim Heranzoomen.');
+  if (state.cloudy) note(cloudNote(t));
+  if (state.source === 'tiles') note(state.fullDone ? 'Öffnungszeiten derzeit nicht verfügbar, weil die Datenquelle nicht antwortet.' : 'Öffnungszeiten werden geladen.');
+  if (state.filters.open && unknownHours) note(`${unknownHours} ${unknownHours === 1 ? 'Ort ist' : 'Orte sind'} ausgeblendet, weil Öffnungszeiten fehlen.`);
+  if (!rows.length) { note('Keine Orte für die gewählten Filter.'); return; }
   for (const { p, inf } of rows) {
     if (inf.lite) continue;
     const s = sunText(inf.sun, i), o = openText(p, t, inf.open[i]);
     const li = document.createElement('li');
     const closed = inf.open[i] === 0;
     const cloudy = state.cloudy && (s.st === 'sun' || s.st === 'part');
-    if (cloudy) s.text = s.st === 'sun' ? 'Frei, aber bewölkt' : 'Halbschatten, bewölkt';
+    if (cloudy) s.text = s.st === 'sun' ? 'Frei, aber bedeckt' : 'Halbschatten, bedeckt';
     li.innerHTML = `<button type="button" class="row">
       <span class="status-dot ${closed ? 'closed' : cloudy ? 'cloudsun' : s.st}" aria-hidden="true"></span>
       <span class="row-main">
@@ -483,23 +489,23 @@ function renderProfiles() {
   });
   if (state.selected) return;
   $('listTitle').textContent = sunny.length ? `${sunny.length} ${sunny.length === 1 ? 'Sonnenplatz' : 'Sonnenplätze'}` : 'Keine Sonnenplätze';
-  $('listMeta').textContent = state.cloudy ? 'bewölkt' : 'im Ausschnitt';
+  $('listMeta').textContent = 'im Kartenausschnitt';
   const ul = $('list');
   ul.replaceChildren();
   const note = (text) => { const li = document.createElement('li'); li.className = 'empty'; li.textContent = text; ul.append(li); };
-  note('Öffnungszeiten und Außenplätze erst beim Heranzoomen.');
-  if (state.cloudy) note('Laut Vorhersage bedeckt.');
-  if (sun.altDeg <= 0.5) { note('Keine Sonne zu dieser Zeit.'); return; }
+  if (f.open || f.seat) note('Die Filter „Geöffnet“ und „Außenplätze“ gelten erst beim Heranzoomen.');
+  if (state.cloudy) note(cloudNote(t));
+  if (sun.altDeg <= 0.5) { note(`Um ${uhr(state.steps[i])} steht die Sonne unter dem Horizont.`); return; }
   for (const pl of sunny.slice(0, MAX_LIST)) {
     const tl = timeline(pl, state.suns, pr.bins);
     let j = i; while (j < tl.length && tl[j] >= SUNNY) j++;
-    const until = j >= tl.length ? 'Sonne bis Sonnenuntergang' : `Sonne bis ${hhmm(state.steps[j])}`;
+    const until = j >= tl.length ? `Sonne bis Sonnenuntergang (${uhr(state.sunset)})` : `Sonne bis ${uhr(state.steps[j])}`;
     const li = document.createElement('li');
     li.innerHTML = `<button type="button" class="row">
       <span class="status-dot ${state.cloudy ? 'cloudsun' : 'sun'}" aria-hidden="true"></span>
       <span class="row-main">
         <span class="row-title">${esc(pl.name)}</span>
-        <span class="row-sub"><span class="${state.cloudy ? '' : 'is-sun'}">${state.cloudy ? 'Frei, aber bewölkt' : until}</span></span>
+        <span class="row-sub"><span class="${state.cloudy ? '' : 'is-sun'}">${state.cloudy ? 'Frei, aber bedeckt' : until}</span></span>
         <span class="row-sub">${subLabel(pl)}</span>
       </span>
     </button>`;
@@ -600,53 +606,47 @@ function renderDetail() {
     <section class="group">
       <h3>Sonne ${dayName}</h3>
       <div class="status-line ${s.st === 'sun' && !state.cloudy ? 'is-sun' : ''}">${s.text}</div>
-      ${state.cloudy && (s.st === 'sun' || s.st === 'part') ? '<p class="note">Der Platz liegt frei, laut Vorhersage ist es aber bedeckt.</p>' : ''}
+      ${state.cloudy && (s.st === 'sun' || s.st === 'part') ? `<p class="note">${cloudNote(t)}</p>` : ''}
       <div class="dayline" aria-hidden="true">${segs}<i class="now" style="left:${(i / n) * 100}%"></i></div>
-      <div class="dayline-scale"><span>${hhmm(state.sunrise)}</span><span>${hhmm(state.sunset)}</span></div>
+      <div class="dayline-scale"><span>Sonnenaufgang ${uhr(state.sunrise)}</span><span>Sonnenuntergang ${uhr(state.sunset)}</span></div>
       <p class="note source-note">${preciseNote(p, inf)}</p>
-      <p class="note">${total ? `${total >= 60 ? Math.floor(total / 60) + ' h ' : ''}${total % 60 ? (total % 60) + ' min' : ''} Sonne an diesem Tag.` : 'An diesem Tag keine Sonne.'}
-      ${inf.facadeDeg != null ? ` Tische vermutlich auf der ${SIDE[Math.round(inf.facadeDeg / 45) % 8]}seite.` : ''}</p>
+      <p class="note">${total ? `Sonne an diesem Tag insgesamt ${total >= 60 ? Math.floor(total / 60) + ' h' : ''}${total >= 60 && total % 60 ? ' ' : ''}${total % 60 ? (total % 60) + ' min' : ''}.` : 'An diesem Tag keine Sonne.'}
+      Berechnet für Plätze 3 m vor der ${inf.facadeDeg != null ? SIDE[Math.round(inf.facadeDeg / 45) % 8] + 'seite des Gebäudes' : 'nächsten Fassade'}.</p>
+    </section>
+
+    <section class="group" ${state.rateFor === p.id && state.rateVisible ? '' : 'hidden'}>
+      <h3>Sonne hier?</h3>
+      <div id="rateBox"></div>
     </section>
 
     <section class="group">
       <h3>Öffnungszeiten</h3>
       ${o.text ? `<div class="status-line ${o.cls}">${o.text}</div>` : ''}
       ${week ? `<ul class="kv">${week.map((r) => `<li class="${r.today ? 'today' : ''}"><span>${r.day}</span><span class="v">${r.text}</span></li>`).join('')}</ul>`
-        : `<p class="note">${state.source === 'tiles' ? 'Gerade nicht abrufbar.' : 'In OpenStreetMap nicht eingetragen.'}</p>`}
+        : `<p class="note">${state.source === 'tiles' ? 'Derzeit nicht verfügbar, weil die Datenquelle nicht antwortet.' : 'Keine Angabe in OpenStreetMap.'}</p>`}
     </section>
 
     <section class="group">
       <h3>Details</h3>
       <ul class="kv">
-        <li><span>Außenplätze</span><span class="v">${p.seating === true ? 'Ja' : p.seating === false ? 'Nein' : 'Unbekannt'}</span></li>
+        <li><span>Außenplätze</span><span class="v">${p.seating === true ? 'Ja' : p.seating === false ? 'Nein' : 'Keine Angabe'}</span></li>
         <li><span>Art</span><span class="v">${subLabel(p)}</span></li>
       </ul>
-      ${p.osm ? `<p class="note"><a href="https://www.openstreetmap.org/edit?${p.osm.replace('/', '=')}" target="_blank" rel="noopener">Angaben in OpenStreetMap ergänzen</a></p>` : ''}
-      <p class="note" id="fbSummary"></p>
+
     </section>
 
-    <section class="group" ${ratingTimeOk(p) ? '' : 'hidden'}>
-      <h3>Vor Ort</h3>
-      <div id="rateBox"></div>
-    </section>`;
+`;
   $('back').onclick = deselect;
   if (keepRate) $('rateBox').replaceWith(keepRate);
   else { state.rateFor = p.id; renderRating(p, inf); }
-  feedbackFor(p.id).then((all) => {
-    const el = $('fbSummary');
-    const list = all.filter((f) => !f.replacedBy);
-    if (!el || !list.length) return;
-    const sun = list.filter((f) => f.answer === 'sun').length;
-    el.textContent = `Deine Bewertungen: ${sun}× sonnig, ${list.length - sun}× Schatten.`;
-  });
 }
 
 function preciseNote(p, inf) {
-  if (inf.precise) return 'Berechnet mit 3D-Stadtmodell und Baumkataster.';
+  if (inf.precise) return 'Grundlage: 3D-Stadtmodell und Straßenbaumkataster Hamburg.';
   const st = state.preciseStatus;
-  if (st?.id === p.id && st.status === 'loading') return 'Lade 3D-Stadtmodell …';
-  if (st?.id === p.id && st.status === 'error') return '3D-Stadtmodell nicht erreichbar. Gebäudehöhen aus OpenStreetMap.';
-  return 'Gebäudehöhen aus OpenStreetMap.';
+  if (st?.id === p.id && st.status === 'loading') return 'Das 3D-Stadtmodell wird für eine genauere Berechnung geladen.';
+  if (st?.id === p.id && st.status === 'error') return 'Grundlage: Gebäudehöhen aus OpenStreetMap, weil das 3D-Stadtmodell derzeit nicht verfügbar ist.';
+  return 'Grundlage: Gebäudehöhen aus OpenStreetMap.';
 }
 
 /* ================= Panel ================= */
@@ -727,35 +727,33 @@ async function openNearby() {
   const run = ++nearRun;
   $('nearby').hidden = false;
   $('nearbyList').replaceChildren();
-  $('nearbyFoot').textContent = '';
   const status = (t) => { if (run === nearRun) $('nearbyStatus').textContent = t; };
-  status('Suche Standort …');
+  status('Standort wird ermittelt.');
   let origin = state.me && Date.now() - state.me.at < 5 * 60000 ? state.me : await locate(false);
-  let originLabel = '';
+  let originLabel = ' um den Standort';
   if (!origin) {
     const c = map.getCenter();
     origin = { lat: c.lat, lon: c.lng };
-    originLabel = ' um die Kartenmitte';
+    originLabel = ' um die Kartenmitte (Standort nicht verfügbar)';
   }
   if (run !== nearRun) return;
   const now = new Date();
-  $('nearbySub').textContent = `Sonne jetzt (${hhmm(now)}), im Umkreis von 2 km${originLabel}`;
-  renderFeedbackFoot();
+  $('nearbySub').textContent = `Geöffnete Orte mit Sonne um ${uhr(now)}, im Umkreis von 2 km${originLabel}.`;
 
   // Sonne überhaupt da?
   const times = SunCalc.getTimes(now, origin.lat, origin.lon);
   if (now < times.sunrise || now > times.sunset) {
-    status(now > times.sunset ? `Sonne untergegangen (${hhmm(times.sunset)}).` : `Sonnenaufgang um ${hhmm(times.sunrise)}.`);
+    status(now > times.sunset ? `Keine Einträge: Sonnenuntergang war um ${uhr(times.sunset)}.` : `Keine Einträge: Sonnenaufgang ist um ${uhr(times.sunrise)}.`);
     return;
   }
   const wx = weatherAt(now);
   if (wx?.cloudy) {
-    status(`Bedeckt (${Math.round(wx.cloud)} % Bewölkung).`);
+    status(`Keine Einträge: Vorhersage für ${uhr(now)} ist bedeckt (Bewölkung ${Math.round(wx.cloud)} %).`);
     return;
   }
 
   // Orte im Umkreis
-  status('Lade Cafés und Bars …');
+  status('Cafés und Bars werden geladen.');
   const keys = layer.tilesAround(origin.lat, origin.lon, NEAR_RADIUS);
   const { fast, full } = places.inTiles(keys);
   let list = await Promise.race([full, new Promise((r) => setTimeout(() => r(null), 15000))]);
@@ -766,8 +764,8 @@ async function openNearby() {
     .filter(({ p, d }) => d <= NEAR_RADIUS && p.seating !== false)
     .sort((a, b) => a.d - b.d);
 
-  status('Berechne …');
-  try { await places.prepare(cand.map((x) => x.p)); } catch { status('Gebäudedaten nicht erreichbar.'); return; }
+  status('Sonne wird berechnet.');
+  try { await places.prepare(cand.map((x) => x.p)); } catch { status('Gebäudedaten derzeit nicht verfügbar.'); return; }
   if (run !== nearRun) return;
 
   // Heutige Zeitschritte am Standort
@@ -789,7 +787,7 @@ async function openNearby() {
   }
   if (run !== nearRun) return;
   if (!hits.length) {
-    status('Gerade nichts in der Sonne.');
+    status(`Keine Einträge: Um ${uhr(now)} liegt im Umkreis kein geöffnetes Café und keine Bar in der Sonne.`);
     return;
   }
   status('');
@@ -797,13 +795,14 @@ async function openNearby() {
   for (const { p, d } of hits) {
     const sun = places.sunTimeline(p, dayKey, suns).sun;
     let j = i; while (j < sun.length && sun[j] >= SUNNY) j++;
-    const until = j >= sun.length ? `Sonne bis Sonnenuntergang (${hhmm(times.sunset)})` : `Sonne bis ${hhmm(steps[j])}`;
+    const until = j >= sun.length ? `Sonne bis Sonnenuntergang (${uhr(times.sunset)})` : `Sonne bis ${uhr(steps[j])}`;
     const o = openText(p, now, p._open.get(dayKey)[i]);
     const li = document.createElement('li');
     li.innerHTML = `<button type="button" class="near-main">
         <span class="row-title">${esc(p.name)}</span>
         <span class="row-sub">${subLabel(p)} · ${d < 1000 ? Math.round(d / 10) * 10 + ' m' : (d / 1000).toFixed(1).replace('.', ',') + ' km'} · ${Math.max(1, Math.round(d / 80))} min zu Fuß</span>
-        <span class="row-sub"><span class="is-sun">${until}</span>${o.text ? ` · <span class="${o.cls}">${o.text}</span>` : ''}</span>
+        <span class="row-sub"><span class="is-sun">${until}</span></span>
+        ${o.text ? `<span class="row-sub"><span class="${o.cls}">${o.text}</span></span>` : ''}
       </button>`;
     li.querySelector('.near-main').onclick = () => {
       if (!state.places.some((x) => x.id === p.id)) state.places.push(p);
@@ -835,21 +834,20 @@ async function freshPosition(force = false) {
 async function renderRating(p, inf) {
   const box = $('rateBox');
   if (!box) return;
-  const recent = (await feedbackFor(p.id)).filter((f) => !f.replacedBy).sort((a, b) => b.ts.localeCompare(a.ts))[0];
+  const show = (v) => { state.rateVisible = v; const sec = $('rateBox')?.closest('section'); if (sec) sec.hidden = !v; };
+  show(false);
+  if (!ratingTimeOk(p)) return;
+  const recent = (await feedbackFor(p.id)).sort((a, b) => b.ts.localeCompare(a.ts))[0];
   if (recent && Date.now() - Date.parse(recent.ts) < FB_INTERVAL) {
-    box.innerHTML = `<p class="fb-done">Deine Bewertung: <b>${recent.answer === 'sun' ? 'sonnig' : 'Schatten'}</b>, ${hhmm(new Date(recent.ts))}. <button type="button">Ändern</button></p>`;
-    box.querySelector('button').onclick = () => showRatingButtons(box, p, recent);
+    box.innerHTML = `<p class="fb-done">Gespeichert: ${recent.answer === 'sun' ? 'Sonne' : 'keine Sonne'} (${uhr(new Date(recent.ts))}).</p>`;
+    show(true);
     return;
   }
-  const section = box.closest('section');
-  if (!ratingTimeOk(p)) { section.hidden = true; return; }
-  section.hidden = false;
-  box.innerHTML = '<p class="note">Prüfe Standort …</p>';
   const me = await freshPosition();
   if ($('rateBox') !== box || state.selected !== p.id) return;
-  const why = ratingBlocked(me, p);
-  if (why) { box.innerHTML = `<p class="note">${why}</p>`; return; }
-  showRatingButtons(box, p, null);
+  if (ratingBlocked(me, p)) return;
+  showRatingButtons(box, p);
+  show(true);
 }
 
 /** Bewerten nur bei Tageslicht und nicht eine Stunde vor bis eine Stunde nach Sonnenuntergang. */
@@ -859,25 +857,21 @@ function ratingTimeOk(p, now = new Date()) {
   return Math.abs(now - t.sunset) > 3600e3;
 }
 
+/** Bewerten nur vor Ort: frische Position, höchstens 300 m entfernt, auf ±100 m genau. */
 function ratingBlocked(me, p) {
-  if (!me) return 'Bewerten nur vor Ort (bis 300 m), mit Standortfreigabe.';
-  if (me.accuracy > FB_MAX_ACC) return `Standort zu ungenau (±${Math.round(me.accuracy)} m).`;
-  const d = metersBetween(me, p);
-  if (d > FB_MAX_DIST) return `Bewerten nur vor Ort (bis 300 m). Du bist ${d < 1000 ? Math.round(d / 10) * 10 + ' m' : (d / 1000).toFixed(1).replace('.', ',') + ' km'} entfernt.`;
-  return null;
+  return !me || me.accuracy > FB_MAX_ACC || metersBetween(me, p) > FB_MAX_DIST;
 }
 
-function showRatingButtons(box, p, replaces) {
-  box.innerHTML = `<div class="fb"><span class="fb-q">Ist es hier jetzt sonnig?</span>
-    <span class="fb-btns"><button type="button" data-a="sun">Sonnig</button><button type="button" data-a="shade">Schatten</button></span></div>`;
+function showRatingButtons(box, p) {
+  box.innerHTML = `<div class="fb-btns"><button type="button" data-a="sun">Ja</button><button type="button" data-a="shade">Nein</button></div>`;
   box.querySelectorAll('button[data-a]').forEach((b) => {
     b.onclick = async () => {
       box.querySelectorAll('button').forEach((x) => { x.disabled = true; });
       // Position beim Absenden erneut prüfen
-      if (!ratingTimeOk(p)) { box.closest('section').hidden = true; return; }
+      if (!ratingTimeOk(p)) { state.rateVisible = false; box.closest('section').hidden = true; return; }
       const me = await freshPosition(true);
       const why = ratingBlocked(me, p);
-      if (why) { box.innerHTML = `<p class="note">${why}</p>`; return; }
+      if (why) { state.rateVisible = false; box.closest('section').hidden = true; return; }
       const answer = b.dataset.a;
       const now = new Date();
       const s = sunVector(SunCalc.getPosition(now, p.lat, p.lon));
@@ -891,7 +885,6 @@ function showRatingButtons(box, p, replaces) {
       const record = {
         ts: now.toISOString(),
         answer,                                       // 'sun' | 'shade'
-        replaces: replaces?.id ?? null,               // korrigierte frühere Bewertung
         place: { id: p.id, osm: p.osm || null, name: p.name, kind: p.sub || p.kind, lat: p.lat, lon: p.lon, seating: p.seating },
         user: { lat: me.lat, lon: me.lon, accuracy: Math.round(me.accuracy), distance_m: Math.round(metersBetween(me, p)) },
         prediction: {
@@ -907,29 +900,13 @@ function showRatingButtons(box, p, replaces) {
         app: 'sunseat-v12',
       };
       const id = await addFeedback(record);
-      if (replaces) await markReplaced(replaces, id);
-      const agrees = (answer === 'sun') === (fraction >= SUNNY);
-      box.innerHTML = `<p class="fb-done">Gespeichert: <b>${answer === 'sun' ? 'sonnig' : 'Schatten'}</b>, ${hhmm(now)}.${agrees ? '' : ' Weicht von der Prognose ab.'}</p>`;
+      box.innerHTML = `<p class="fb-done">Gespeichert: ${answer === 'sun' ? 'Sonne' : 'keine Sonne'} (${uhr(now)}).</p>`;
     };
   });
 }
 
 const inHamburgBox = (p) => p.lon > 8.42 && p.lon < 10.34 && p.lat > 53.39 && p.lat < 53.97;
 
-async function renderFeedbackFoot() {
-  const all = await allFeedback();
-  const el = $('nearbyFoot');
-  const n = all.filter((f) => !f.replacedBy).length;
-  el.innerHTML = `Bewerten kannst du in der Einzelansicht eines Ortes, vor Ort bis 300 m.${n ? ` Gespeichert auf diesem Gerät: ${n}. <button type="button" id="fbExport">Exportieren</button>` : ''}`;
-  $('fbExport')?.addEventListener('click', () => {
-    const blob = new Blob([JSON.stringify(all, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `sunseat-rueckmeldungen-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  });
-}
 
 /* ================= Standort ================= */
 

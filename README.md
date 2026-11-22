@@ -30,17 +30,11 @@ Für das Gebiet Bahrenfeld bis Hamm und Wilhelmsburg-Nord bis Barmbek-Nord (1557
 
 - **Der Knopf „Listenansicht“** öffnet eine Liste: geöffnete Cafés und Bars, die jetzt Sonne haben, im Umkreis von 2 km um deinen Standort. Sortiert nach Entfernung, mit Gehzeit, „Sonne bis …“ und Öffnungszeit.
 - **Leere Liste:** Nach Sonnenuntergang, bei bedecktem Himmel oder wenn laut Berechnung nichts in der Sonne liegt, bleibt die Liste leer. Ein Satz sagt, warum.
-- **Bewertung vor Ort:** In der Einzelansicht eines Ortes steht unter „Vor Ort“ die Frage „Ist es hier jetzt sonnig?“ mit den Antworten „Ja, sonnig“ und „Nein, im Schatten“.
-  - **Nur vor Ort:** Die Frage erscheint nur, wenn dein Standort höchstens 300 m entfernt ist und auf ±100 m genau. Beim Absenden wird die Position noch einmal frisch abgefragt.
-  - **Nur bei Tageslicht:** Nicht in der Stunde vor und nach Sonnenuntergang und nicht nachts.
-  - **Häufigkeit:** Höchstens eine Bewertung pro Ort alle 10 Minuten. „Ändern“ ersetzt die vorige Bewertung, statt eine zweite Stimme anzulegen.
-  - **Gespeichert in einer Datenbank im Browser (IndexedDB):**
-    - Antwort und Prognose (Anteil der Sitzpunkte in der Sonne, gerechnet mit 3D-Modell oder OSM-Höhen)
-    - Lage der Sitzpunkte, jeweils mit Angabe, ob ein Gebäude oder ein Baum sie beschattet
-    - Fassadenrichtung, Sonnenstand, Bewölkung
-    - dein Standort mit Genauigkeit und Abstand
-  - **Export:** Unten in der Nähe-Liste lässt sich alles als JSON-Datei herunterladen.
-  - **Grenze:** Der Schutz gegen Betrug läuft auf dem Gerät. Gegen gefälschte GPS-Positionen hilft erst eine Prüfung auf einem Server.
+- **Bewertung „Sonne hier?“ (Ja/Nein)** in der Einzelansicht eines Ortes. Sie erscheint nur, wenn alle Bedingungen erfüllt sind:
+  - Der Standort ist höchstens 300 m entfernt und auf ±100 m genau. Beim Absenden wird er erneut geprüft.
+  - Es ist Tag, aber nicht die Stunde vor oder nach Sonnenuntergang.
+  - Für den Ort gibt es in den letzten 10 Minuten noch keine Bewertung.
+- **Gespeichert** wird in IndexedDB auf dem Gerät: Antwort, Prognose, Sitzpunkte mit Angabe zu Gebäude- und Baumschatten, Sonnenstand, Bewölkung und Standort. Die Daten sind für die spätere Auswertung gedacht.
 
 ## Zwischenspeicher
 

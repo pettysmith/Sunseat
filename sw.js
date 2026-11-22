@@ -3,7 +3,7 @@
 // - Kartenkacheln, Schriften, Kartenstil (OpenFreeMap): Cache zuerst, 7 Tage
 // - Hamburger Daten (Baumkataster, 3D-Stadtmodell): Cache zuerst, 30 Tage
 // - Wetter (Open-Meteo): Netz zuerst, bei Fehler bis 3 Stunden alt aus dem Cache
-const VERSION = 'sunseat-v12';
+const VERSION = 'sunseat-v14';
 const SHELL = [
   './', 'index.html', 'style.css', 'app.js', 'shadow.js', 'sunlayer.js', 'places.js', 'trees.js', 'lod2.js', 'db.js', 'profiles.js', 'data/horizons.json',
   'manifest.webmanifest', 'vendor/suncalc.js', 'vendor/opening_hours.js', 'vendor/maplibre-gl.js', 'vendor/maplibre-gl.css',
