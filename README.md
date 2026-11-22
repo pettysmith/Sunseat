@@ -26,6 +26,13 @@ Für das Gebiet Bahrenfeld bis Hamm und Wilhelmsburg-Nord bis Barmbek-Nord (1557
 
   Mit `VERIFY=1` wird zusätzlich die Übereinstimmung mit der Strahlrechnung ausgegeben. Für das ganze Gebiet dauert der Lauf einige Minuten, vor allem wegen des Baumkatasters. Das Rechnen selbst braucht etwa 1 Sekunde.
 
+## Lage der Tische selbst setzen
+
+In der Einzelansicht eines Ortes setzt „Lage der Tische setzen“ die Tische an die Stelle, die du auf der Karte antippst. Die Stelle muss höchstens 80 m vom Ort entfernt sein.
+- **Gerechnet wird dann** mit drei Punkten: dem gesetzten Punkt und je einem 2,5 m links und rechts entlang der nächsten Fassade.
+- **Auf der Karte** zeigt ein blauer Punkt die gesetzte Lage. Ein Ring zeigt die geschätzte.
+- **Speicherung** auf dem Gerät. In Bewertungen wird mitgespeichert, ob die Lage gesetzt oder geschätzt war.
+
 ## Listenansicht
 
 - **Der Knopf „Listenansicht“** öffnet eine Liste: geöffnete Cafés und Bars, die jetzt Sonne haben, im Umkreis von 2 km um deinen Standort. Sortiert nach Entfernung, mit Gehzeit, „Sonne bis …“ und Öffnungszeit.

@@ -36,6 +36,8 @@ const state = {
   filters: { open: false, sun: false, cafe: false, bar: false, seat: false, ...store.get('filters3', {}) },
   places: [], source: 'osm', rows: [], selected: null, placesKey: '',
   detent: 'medium',
+  terraces: store.get('terraces', {}),
+  placing: null,
 };
 
 /* ================= Karte ================= */
@@ -62,6 +64,7 @@ map.on('load', async () => {
   try { tileUrl = (await (await fetch(TILES)).json()).tiles[0]; } catch { notice('Kartendaten nicht erreichbar'); return; }
   layer = new SunLayer(map, tileUrl, { beforeId: firstLabel, onStatus, onTrees: () => { clearTimeout(state.treeTimer); state.treeTimer = setTimeout(refreshPlaces, 400); } });
   places = new Places(layer);
+  places.terraceFor = terraceFor;
   addPlaceLayers();
   document.querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show');
   selectDay(0);
@@ -79,6 +82,12 @@ map.on('moveend', () => {
 });
 
 function addPlaceLayers() {
+  // Lage der Tische des ausgewählten Ortes: gefüllt = von dir gesetzt, Ring = geschätzt
+  map.addSource('seat', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+  map.addLayer({ id: 'seat', type: 'circle', source: 'seat', paint: {
+    'circle-radius': 7, 'circle-color': ['case', ['get', 'own'], '#1a73e8', 'rgba(255,255,255,0.6)'],
+    'circle-stroke-color': '#1a73e8', 'circle-stroke-width': 2,
+  } });
   map.addSource('places', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
   map.addLayer({ id: 'places-hit', type: 'circle', source: 'places', paint: { 'circle-radius': 16, 'circle-opacity': 0 } });
   map.addLayer({
@@ -99,9 +108,10 @@ function addPlaceLayers() {
     },
     paint: { 'text-color': '#111318', 'text-halo-color': '#ffffff', 'text-halo-width': 1.6 },
   });
+  map.on('click', (e) => { if (state.placing) placeTerrace(e.lngLat); });
   map.on('click', 'places-hit', (e) => {
     const f = e.features?.[0];
-    if (!f) return;
+    if (!f || state.placing) return;
     if (String(f.properties.id).startsWith('h:')) goToProfilePlace(state.profiles.places.find((x) => x.id === f.properties.id));
     else select(f.properties.id);
   });
@@ -110,6 +120,7 @@ function addPlaceLayers() {
 }
 
 function onStatus(s) {
+  if (state.placing) return; // Hinweis zum Setzen der Tische nicht überschreiben
   if (s === 'zoom') notice(map.getZoom() >= OVERVIEW_ZOOM || profileMode() ? '' : 'Näher heranzoomen, um die Sonne zu sehen');
   else if (s === 'loading') notice('Lade Gebäude …');
   else if (s === 'error') notice('Gebäudedaten nicht erreichbar');
@@ -445,6 +456,64 @@ function renderPlaces() {
   }
 }
 
+/* ================= Lage der Tische selbst setzen ================= */
+
+const SEAT_MAX_DIST = 80; // Meter vom Ort
+
+function terraceKey(p) { return p.id; }
+
+/** Gesetzte Tische eines Ortes (auf diesem Gerät); auch für denselben Ort aus anderer Quelle (Name + Nähe). */
+function terraceFor(p) {
+  const all = state.terraces;
+  if (all[terraceKey(p)]) return all[terraceKey(p)];
+  for (const t of Object.values(all)) if (t.name === p.name && metersBetween(t.place, p) < 60) return t;
+  return null;
+}
+
+function setTerrace(p, latlon) {
+  for (const [k, t] of Object.entries(state.terraces)) if (k === terraceKey(p) || (t.name === p.name && metersBetween(t.place, p) < 60)) delete state.terraces[k];
+  if (latlon) state.terraces[terraceKey(p)] = { lat: latlon.lat, lon: latlon.lon, name: p.name, place: { lat: p.lat, lon: p.lon }, ts: Date.now() };
+  store.set('terraces', state.terraces);
+  places.forget(p);
+  renderPlaces();
+}
+
+function startPlacing(p) {
+  state.placing = p.id;
+  setDetent('small');
+  map.easeTo({ center: [p.lon, p.lat], zoom: Math.max(map.getZoom(), 18), duration: 500 });
+  notice('Tippe auf die Stelle, an der die Tische stehen');
+  renderPlaces();
+}
+
+function stopPlacing(silent = false) {
+  if (!state.placing) return;
+  state.placing = null;
+  notice('');
+  if (!silent) renderPlaces();
+}
+
+function placeTerrace(lngLat) {
+  const p = state.places.find((x) => x.id === state.placing);
+  if (!p) { stopPlacing(); return; }
+  const pt = { lat: lngLat.lat, lon: lngLat.lng };
+  if (metersBetween(pt, p) > SEAT_MAX_DIST) { notice(`Zu weit vom Ort entfernt (höchstens ${SEAT_MAX_DIST} m)`); return; }
+  stopPlacing(true);
+  setDetent('medium');
+  setTerrace(p, pt);
+}
+
+function showSeat(p) {
+  const own = terraceFor(p);
+  let feats = [];
+  if (own) feats = [{ lat: own.lat, lon: own.lon, own: true }];
+  else if (places?.index) {
+    const d = places.diagnose(p, state.suns[state.idx]);
+    if (d.samples[0]) feats = [{ ...d.samples[0], own: false }];
+  }
+  map.getSource('seat')?.setData({ type: 'FeatureCollection', features: feats.map((f) => ({ type: 'Feature', properties: { own: f.own }, geometry: { type: 'Point', coordinates: [f.lon, f.lat] } })) });
+}
+
 /* ================= Vorab berechnete Sonnenplätze (weiter Zoom) ================= */
 
 function profileMode() {
@@ -550,6 +619,8 @@ async function loadPrecise(p) {
 }
 
 function deselect() {
+  stopPlacing(true);
+  map.getSource('seat')?.setData({ type: 'FeatureCollection', features: [] });
   state.selected = null;
   state.rateFor = null;
   $('listView').hidden = false;
@@ -605,7 +676,8 @@ function renderDetail() {
       <div class="dayline-scale"><span>${hhmm(state.sunrise)}</span><span>${hhmm(state.sunset)}</span></div>
       <p class="note source-note">${preciseNote(p, inf)}</p>
       <p class="note">${total ? `${total >= 60 ? Math.floor(total / 60) + ' h ' : ''}${total % 60 ? (total % 60) + ' min' : ''} Sonne an diesem Tag.` : 'An diesem Tag keine Sonne.'}
-      ${inf.facadeDeg != null ? ` Tische vermutlich auf der ${SIDE[Math.round(inf.facadeDeg / 45) % 8]}seite.` : ''}</p>
+      ${terraceFor(p) ? ' Tische von dir gesetzt.' : inf.facadeDeg != null ? ` Tische vermutlich auf der ${SIDE[Math.round(inf.facadeDeg / 45) % 8]}seite.` : ''}</p>
+      <p class="note"><button type="button" class="link-button" id="seatBtn">${state.placing === p.id ? 'Abbrechen' : terraceFor(p) ? 'Lage der Tische ändern' : 'Lage der Tische setzen'}</button>${terraceFor(p) && state.placing !== p.id ? ' · <button type="button" class="link-button" id="seatReset">Zurücksetzen</button>' : ''}</p>
     </section>
 
     <section class="group">
@@ -630,6 +702,9 @@ function renderDetail() {
       <div id="rateBox"></div>
     </section>`;
   $('back').onclick = deselect;
+  $('seatBtn').onclick = () => (state.placing === p.id ? stopPlacing() : startPlacing(p));
+  $('seatReset')?.addEventListener('click', () => { setTerrace(p, null); });
+  showSeat(p);
   if (keepRate) $('rateBox').replaceWith(keepRate);
   else { state.rateFor = p.id; renderRating(p, inf); }
   feedbackFor(p.id).then((all) => {
@@ -900,6 +975,7 @@ function showRatingButtons(box, p, replaces) {
           buildings: source,                          // 'lod2' = 3D-Stadtmodell, 'osm' = OpenStreetMap-Höhen
           trees: inHamburgBox(p) ? 'baumkataster-hamburg' : 'keine',
           facadeDeg: diag.facadeDeg,
+          seat: diag.seat,                            // 'user' = Tische selbst gesetzt, 'estimated' = geschätzt
           samples: diag.samples,                      // je Sitzpunkt: von Gebäude / Baum beschattet? (OSM-Rechnung)
         },
         sun: { altitude: +s.altDeg.toFixed(2), azimuth: +s.bearingDeg.toFixed(2) },
