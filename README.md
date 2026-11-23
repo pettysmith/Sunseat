@@ -10,6 +10,18 @@ Sonnen-Karte für Hamburg (und überall sonst): Wo fällt gerade Sonne auf den B
 - Zeitregler von Sonnenaufgang bis -untergang in 5-Minuten-Schritten, dazu Tage für die nächste Woche, Sonnenhöhe und -richtung und die Bewölkung als Vorhersage
 - **Start:** Jedes Gerät öffnet mit seiner eigenen Ansicht, also der zuletzt dort gesehenen Stelle und dann dem eigenen Standort, und mit der aktuellen Uhrzeit. „Jetzt“ springt jederzeit dorthin zurück, auch nachts. Nach mehr als 10 Minuten im Hintergrund springt die App von selbst auf jetzt.
 
+## Weltweit, bei jedem Zoom
+
+| Zoom | Anzeige |
+|---|---|
+| unter 4 (Welt, Kontinent) | Tag, Dämmerung (Sonne 0 bis 6° unter dem Horizont) und Nacht für die gewählte Uhrzeit |
+| 4–13 (Land bis Stadt) | dazu Sonne (warm) oder Wolken (grau) aus der Sonnenscheindauer der Wettervorhersage |
+| ab 14 | Gebäude- und Baumschatten, Cafés und Bars |
+
+- **Rechnung:** Die Sonnenhöhe wird an einem Raster mit etwa 3 Pixeln Abstand berechnet. Das Wetter kommt an 7 × 7 Punkten aus einer einzigen Open-Meteo-Abfrage und wird dazwischen weich interpoliert. Ohne Wetterdaten bleibt der Tag neutral.
+- **Zeitregler:** Unter Zoom 8 und bei Polartag oder Polarnacht umfasst er den ganzen Tag. Wird die Karte um mehr als 50 km verschoben, rechnet die App Sonnenauf- und -untergang für die neue Kartenmitte.
+- **Zeitzone:** Alle Uhrzeiten gelten in der Zeitzone des Geräts. Liegt die Kartenmitte deutlich in einer anderen Zeitzone, steht ein Hinweis darunter.
+
 ## Weit herausgezoomt: vorab berechnete Horizontprofile
 
 Für das Gebiet Bahrenfeld bis Hamm und Wilhelmsburg-Nord bis Barmbek-Nord (1557 Cafés und Bars) liegt in `data/horizons.json` ein **Horizontprofil** pro Ort.
@@ -73,7 +85,7 @@ Ist zu einem Café oder einer Bar ein Außenbereich eingetragen (`leisure=outdoo
 2. Für den Sonnenstand (SunCalc) wirft jede Wand ein Schattenviereck vom Fuß bis zur Länge Höhe ÷ tan(Sonnenhöhe). Auch Wände zu Innenhöfen werfen Schatten.
 3. Schatten und Dächer werden portionsweise in eine Maske gezeichnet und dann unter den Straßennamen auf die Karte gelegt. Ein einziger Riesenpfad wäre bei Zoom 14 minutenlang beim Füllen. Alles andere an Land bekommt die Sonnenfarbe.
 
-Aufbau: `profiles.js` (vorab berechnete Horizontprofile), `tools/precompute-horizons.mjs` (erzeugt sie), `db.js` (IndexedDB: Zwischenspeicher, Rückmeldungen), `shadow.js` (Geometrie), `trees.js` (Baumkataster), `lod2.js` (3D-Stadtmodell), `sunlayer.js` (Kacheln laden, Sonne zeichnen), `places.js` (Cafés und Bars, Öffnungszeiten, Sonne am Sitzplatz), `app.js` (Karte und Bedienung). Tests: `npm test`.
+Aufbau: `regionlayer.js` (Tag/Nacht und Wetter bei weitem Zoom), `profiles.js` (vorab berechnete Horizontprofile), `tools/precompute-horizons.mjs` (erzeugt sie), `db.js` (IndexedDB: Zwischenspeicher, Rückmeldungen), `shadow.js` (Geometrie), `trees.js` (Baumkataster), `lod2.js` (3D-Stadtmodell), `sunlayer.js` (Kacheln laden, Sonne zeichnen), `places.js` (Cafés und Bars, Öffnungszeiten, Sonne am Sitzplatz), `app.js` (Karte und Bedienung). Tests: `npm test`.
 
 ## Grenzen
 

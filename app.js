@@ -2,6 +2,7 @@
 import { SunLayer, MIN_ZOOM } from './sunlayer.js';
 import { addFeedback, feedbackFor } from './db.js';
 import { loadProfiles, covers, sunFraction, timeline } from './profiles.js';
+import { RegionLayer, REGION_MAX_ZOOM } from './regionlayer.js';
 import { sunVector, compass } from './shadow.js';
 import { Places, SUNNY, openTimeline, subLabel, weekHours, preciseContext, preciseTimeline } from './places.js';
 
@@ -47,13 +48,13 @@ const lastView = store.get('view', null);
 const map = new maplibregl.Map({
   container: 'map', style: STYLE,
   center: lastView ? [lastView.lng, lastView.lat] : [START.lng, START.lat], zoom: lastView?.zoom ?? START.zoom,
-  minZoom: 10, maxZoom: 19,
+  minZoom: 1, maxZoom: 19, renderWorldCopies: false,
   dragRotate: false, pitchWithRotate: false, touchPitch: false, attributionControl: false,
 });
 map.touchZoomRotate.disableRotation();
 map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
 
-let layer, places, me;
+let layer, places, me, region;
 
 map.on('load', async () => {
   for (const l of map.getStyle().layers) if (/housenum|poi/i.test(l.id)) map.setLayoutProperty(l.id, 'visibility', 'none');
@@ -61,6 +62,7 @@ map.on('load', async () => {
   let tileUrl;
   try { tileUrl = (await (await fetch(TILES)).json()).tiles[0]; } catch { notice('Karte derzeit nicht verfügbar'); return; }
   layer = new SunLayer(map, tileUrl, { beforeId: firstLabel, onStatus, onTrees: () => { clearTimeout(state.treeTimer); state.treeTimer = setTimeout(refreshPlaces, 400); } });
+  region = new RegionLayer(map, { beforeId: 'sunlayer' });
   places = new Places(layer);
   addPlaceLayers();
   document.querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show');
@@ -76,6 +78,8 @@ map.on('moveend', () => {
   updateSun();
   refreshPlaces();
   if (!state.cloudsAt || distKm(c, state.cloudsAt) > 5) loadClouds();
+  // Tagesablauf für die neue Gegend: bei großer Verschiebung oder beim Wechsel zwischen Tages- und 24-Stunden-Regler
+  if (state.steps.length && (distKm(c, state.stepsAt) > 50 || fullDayMode() !== state.fullDay)) selectDay(state.dayOffset, state.steps[state.idx]);
 });
 
 function addPlaceLayers() {
@@ -110,7 +114,7 @@ function addPlaceLayers() {
 }
 
 function onStatus(s) {
-  if (s === 'zoom') notice(map.getZoom() >= OVERVIEW_ZOOM || profileMode() ? '' : 'Sonnenflächen erscheinen beim Heranzoomen');
+  if (s === 'zoom') notice('');
   else if (s === 'loading') notice('Gebäude werden geladen');
   else if (s === 'error') notice('Gebäudedaten derzeit nicht verfügbar');
   else notice('');
@@ -132,13 +136,25 @@ function dayStart(offset) {
   return d;
 }
 
-function selectDay(offset) {
+/** Weit herausgezoomt (oder bei Polartag/-nacht) umfasst der Regler den ganzen Tag. */
+function fullDayMode() {
+  return map.getZoom() < 8;
+}
+
+function selectDay(offset, keepTime = null) {
   const c = map.getCenter();
   const times = SunCalc.getTimes(dayStart(offset), c.lat, c.lng);
   const now = new Date();
   state.dayOffset = offset;
+  state.stepsAt = { lat: c.lat, lng: c.lng };
+  const polar = isNaN(times.sunrise) || isNaN(times.sunset);
+  state.fullDay = fullDayMode();
   // Heute reicht der Regler immer bis „jetzt“, auch vor Sonnenaufgang oder nach Sonnenuntergang
   let from = times.sunrise, to = times.sunset;
+  if (state.fullDay || polar) {
+    from = dayStart(offset); from.setHours(0, 0, 0, 0);
+    to = new Date(from.getTime() + 24 * 3600e3 - STEP * 60000);
+  }
   if (offset === 0) { if (now < from) from = now; if (now > to) to = now; }
   const start = new Date(from);
   start.setMinutes(Math.floor(start.getMinutes() / STEP) * STEP, 0, 0);
@@ -147,13 +163,22 @@ function selectDay(offset) {
   state.suns = state.steps.map((t) => ({ ...sunVector(SunCalc.getPosition(t, c.lat, c.lng)), date: t }));
   state.dayKey = `${offset}:${start.getTime()}:${state.steps.length}:${c.lat.toFixed(2)},${c.lng.toFixed(2)}`;
   state.sunrise = times.sunrise; state.sunset = times.sunset;
-  const target = offset === 0 ? now : times.solarNoon;
+  const target = keepTime || (offset === 0 ? now : polar ? new Date(dayStart(offset)) : times.solarNoon);
   state.idx = nearestIdx(target);
   const s = $('slider');
   s.max = state.steps.length - 1;
   s.value = state.idx;
-  $('rise').textContent = `Sonnenaufgang ${uhr(times.sunrise)}`;
-  $('set').textContent = `Sonnenuntergang ${uhr(times.sunset)}`;
+  if (polar) {
+    const alt = SunCalc.getPosition(dayStart(offset), c.lat, c.lng).altitude;
+    $('rise').textContent = alt > 0 ? 'Polartag: Sonne geht nicht unter' : 'Polarnacht: Sonne geht nicht auf';
+    $('set').textContent = '';
+  } else {
+    $('rise').textContent = `Sonnenaufgang ${uhr(times.sunrise)}`;
+    $('set').textContent = `Sonnenuntergang ${uhr(times.sunset)}`;
+  }
+  // Uhrzeiten gelten in der Zeitzone des Geräts; weit entfernt darauf hinweisen
+  const deviceLon = -new Date().getTimezoneOffset() / 4;   // grobe Längengrad-Entsprechung der Gerätezeitzone
+  $('tzNote').textContent = Math.abs(((c.lng - deviceLon + 540) % 360) - 180) > 22.5 ? 'Uhrzeiten in der Zeitzone dieses Geräts' : '';
   renderDays();
   updateSun();
   renderPlaces();
@@ -184,6 +209,7 @@ function updateSun() {
   const t = state.steps[state.idx];
   const sun = state.suns[state.idx];
   layer.setSun(sun);
+  region?.setDate(t);
   $('time').textContent = uhr(t);
   $('sun').textContent = sun.altDeg > 0 ? `Sonnenhöhe ${Math.round(sun.altDeg)}°, aus ${LONG[compass(sun.bearingDeg)]}` : 'Sonne unter dem Horizont';
   $('now').setAttribute('aria-pressed', state.dayOffset === 0 && Math.abs(t - new Date()) <= STEP * 60000);

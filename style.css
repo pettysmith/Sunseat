@@ -207,3 +207,8 @@ body.sheet-large .maplibregl-ctrl-bottom-right { display: none; }
 .time-row { flex-wrap: wrap; row-gap: 0; }
 .time-row #sun { order: 3; flex-basis: 100%; }
 .time-row .now-button { margin-left: auto; }
+
+#tzNote { order: 4; flex-basis: 100%; }
+#tzNote:empty, #set:empty { display: none; }
+.sw-cloud { background: #b4b8bf; outline: 1px solid #8a8f99; outline-offset: -1px; }
+.sw-night { background: #3a4058; outline: 1px solid #262b40; outline-offset: -1px; }
